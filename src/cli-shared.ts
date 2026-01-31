@@ -79,7 +79,7 @@ export async function handleDaemonCommand(
     const result = await callDaemon(path, options);
 
     if (result.error) {
-      console.error(result.error);
+      console.log(result.error);
       process.exit(1);
     }
 
@@ -103,7 +103,8 @@ export async function handleDaemonCommand(
       console.error("Daemon is not running and failed to auto-start");
       process.exit(1);
     }
-    throw error;
+    console.error(message);
+    process.exit(1);
   }
 }
 

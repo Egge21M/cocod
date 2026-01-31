@@ -107,9 +107,10 @@ cocod balance
 
 #### NPC (npub.cash)
 
-| Command       | Description                            |
-| ------------- | -------------------------------------- |
-| `npc address` | Get NPC address for receiving payments |
+| Command               | Description                                   |
+| --------------------- | --------------------------------------------- |
+| `npc address`         | Get NPC address for receiving payments        |
+| `npc username <name>` | Buy/set NPC username (use `--confirm` to pay) |
 
 #### Daemon Control
 
@@ -167,6 +168,12 @@ cocod send cashu 1000 --mint-url https://mint.example.com
 
 # Pay a Lightning invoice
 cocod send bolt11 "lnbc1000n1..."
+
+# Check NPC username price
+cocod npc username myname
+
+# Buy NPC username
+cocod npc username myname --confirm
 
 # View last 10 history entries
 cocod history --limit 10

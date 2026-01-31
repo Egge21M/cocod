@@ -154,6 +154,20 @@ npcCmd
     await handleDaemonCommand("/npc/address");
   });
 
+npcCmd
+  .command("username <name>")
+  .description("Buy/set NPC username")
+  .option("--confirm", "Confirm payment to set username")
+  .action(async (name: string, options: { confirm?: boolean }) => {
+    await handleDaemonCommand("/npc/username", {
+      method: "POST",
+      body: {
+        username: name,
+        confirm: options.confirm,
+      },
+    });
+  });
+
 // History - with pagination and watch options
 program
   .command("history")
