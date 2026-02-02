@@ -23,7 +23,7 @@
   "dependencies": {
     "@scure/bip39": "^2.0.1",
     "coco-cashu-core": "^1.1.2-rc.43",
-    "coco-cashu-plugin-npc": "^2.3.0",
+    "coco-cashu-plugin-npc": "^2.3.1",
     "coco-cashu-sqlite3": "^1.1.2-rc.43",
     "commander": "^14.0.2",
     "nostr-tools": "^2.22.1",
