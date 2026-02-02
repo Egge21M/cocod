@@ -95,9 +95,15 @@ cocod mints info <url>
 
 ### Lightning Address (NPC)
 
+Lightning Addresses are email-style identifiers (like `name@npubx.cash`) that let others pay you over Lightning. If you have not purchased a username, NPC provides a free address from your Nostr npub; purchasing a username gives you a human-readable handle. Buying a username is a two-step flow so you can review the required sats before confirming payment.
+
 ```bash
 # Get your NPC Lightning Address
 cocod npc address
+
+# Reserve/buy an NPC username (two-step)
+cocod npc username <name>
+cocod npc username <name> --confirm
 ```
 
 ### History
