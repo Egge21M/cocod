@@ -7,7 +7,7 @@
       "dependencies": {
         "@scure/bip39": "^2.0.1",
         "coco-cashu-core": "^1.1.2-rc.43",
-        "coco-cashu-plugin-npc": "^2.2.4",
+        "coco-cashu-plugin-npc": "^2.3.0",
         "coco-cashu-sqlite3": "^1.1.2-rc.43",
         "commander": "^14.0.2",
         "nostr-tools": "^2.22.1",
@@ -85,7 +85,7 @@
 
     "coco-cashu-core": ["coco-cashu-core@1.1.2-rc.43", "", { "dependencies": { "@cashu/cashu-ts": "3.3.0", "@noble/curves": "^2.0.1", "@noble/hashes": "^2.0.1", "@scure/bip32": "^2.0.1" }, "peerDependencies": { "typescript": "^5" } }, "sha512-n7SFogAzhgUJ1NK5GXy20WkMpnq7+d7Oe8lb/H1IPBI5YbXAKho/IpHLffFTxs7qB7Ru2Rbjhj8tdq0lVByj4w=="],
 
-    "coco-cashu-plugin-npc": ["coco-cashu-plugin-npc@2.2.4", "", { "dependencies": { "npubcash-sdk": "^0.3.2" }, "peerDependencies": { "coco-cashu-core": "^1.1.2-rc.38", "typescript": "^5.0.0" } }, "sha512-Es6EZI8qo76fEXJtV1wLjQPAf0CSN3ZtVsmfRekkw5B8cNJefAHkBLXNmUQg7nJb4IGG2qDFsM9k399fxFJc0w=="],
+    "coco-cashu-plugin-npc": ["coco-cashu-plugin-npc@2.3.0", "", { "dependencies": { "npubcash-sdk": "^0.3.2" }, "peerDependencies": { "coco-cashu-core": "^1.1.2-rc.39", "typescript": "^5.0.0" } }, "sha512-Hf4igQ43lrIsLkJlsGD3HfAf7joGY0Dczd8GIjvsDCO/mgxc+LB6FU1OzwOea3RElafYa9+dMsvqg8mmP6K3ng=="],
 
     "coco-cashu-sqlite3": ["coco-cashu-sqlite3@1.1.2-rc.43", "", { "peerDependencies": { "coco-cashu-core": "1.1.2-rc.43", "sqlite3": "^5", "typescript": "^5" } }, "sha512-vLOJaHxcFMxpmIXdphMChxzSgPHBOGcjs+1rPLUKfLw9ssLOfCcRMLqNQh94c3YAhHagWwzr5knsqQBPHRi2pQ=="],
 
