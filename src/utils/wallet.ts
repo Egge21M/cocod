@@ -1,4 +1,4 @@
-import { initializeCoco, ConsoleLogger, type Manager } from "coco-cashu-core";
+import { initializeCoco, ConsoleLogger, type Logger, type Manager } from "coco-cashu-core";
 import { SqliteRepositories } from "coco-cashu-sqlite-bun";
 import { Database } from "bun:sqlite";
 import { mnemonicToSeedSync } from "@scure/bip39";
@@ -12,6 +12,7 @@ import type { WalletConfig } from "./config.js";
 export async function initializeWallet(
   config: WalletConfig,
   passphrase?: string,
+  logger?: Logger,
 ): Promise<Manager> {
   let mnemonic: string;
 
@@ -28,17 +29,18 @@ export async function initializeWallet(
   const seed = mnemonicToSeedSync(mnemonic);
 
   const repo = new SqliteRepositories({ database: new Database(DB_FILE) });
-  const logger = new ConsoleLogger("Coco", { level: "info" });
+  const walletLogger = logger?.child?.({ component: "coco" }) ?? logger;
+  const cocoLogger = walletLogger ?? new ConsoleLogger("Coco", { level: "info" });
   const sk = privateKeyFromSeedWords(mnemonic);
   const signer = async (t: EventTemplate) => finalizeEvent(t, sk);
   const npcPlugin = new NPCPlugin("https://npubx.cash", signer, {
     useWebsocket: true,
-    logger,
+    logger: cocoLogger,
   });
   const coco = await initializeCoco({
     repo,
     seedGetter: async () => seed,
-    logger,
+    logger: cocoLogger,
   });
 
   coco.use(npcPlugin);

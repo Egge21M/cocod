@@ -1,11 +1,14 @@
-import { getDecodedToken, getEncodedToken } from "coco-cashu-core";
+import { getDecodedToken, getEncodedToken, type Logger } from "coco-cashu-core";
 import { generateMnemonic, mnemonicToSeedSync, validateMnemonic } from "@scure/bip39";
 import { wordlist } from "@scure/bip39/wordlists/english.js";
 import { nip19 } from "nostr-tools";
+
 import { encryptMnemonic } from "./utils/crypto.js";
-import { initializeWallet } from "./utils/wallet.js";
 import { CONFIG_FILE, SALT_FILE } from "./utils/config.js";
+import { serializeError } from "./utils/logger.js";
+import { initializeWallet } from "./utils/wallet.js";
 import type { WalletConfig } from "./utils/config.js";
+import type { AppLogger } from "./utils/logger.js";
 import type {
   DaemonStateManager,
   LockedState,
@@ -15,6 +18,7 @@ import type {
 
 export function createRouteHandlers(
   stateManager: DaemonStateManager,
+  logger?: Logger,
 ): Record<string, { GET?: RouteHandler; POST?: RouteHandler }> {
   return {
     "/ping": {
@@ -75,7 +79,7 @@ export function createRouteHandlers(
               createdAt: new Date().toISOString(),
             };
 
-            const manager = await initializeWallet(config);
+            const manager = await initializeWallet(config, undefined, logger);
             const seed = mnemonicToSeedSync(mnemonic);
             stateManager.setUnlocked(manager, mintUrl, seed);
           }
@@ -114,7 +118,7 @@ export function createRouteHandlers(
             createdAt: new Date().toISOString(),
           };
 
-          const manager = await initializeWallet(config);
+          const manager = await initializeWallet(config, undefined, logger);
           const seed = mnemonicToSeedSync(mnemonic);
 
           stateManager.setUnlocked(manager, state.mintUrl, seed);
@@ -436,6 +440,7 @@ export function createRouteHandlers(
 export function buildRoutes(
   routeHandlers: Record<string, { GET?: RouteHandler; POST?: RouteHandler }>,
   getState: () => import("./utils/state.js").DaemonState,
+  logger?: AppLogger,
 ): Record<
   string,
   {
@@ -456,14 +461,48 @@ export function buildRoutes(
 
     if (handlers.GET) {
       const handler = handlers.GET;
-      routes[path]!.GET = async (req: Request) => handler(req, getState());
+      routes[path]!.GET = async (req: Request) => runRoute(path, req, getState, handler, logger);
     }
 
     if (handlers.POST) {
       const handler = handlers.POST;
-      routes[path]!.POST = async (req: Request) => handler(req, getState());
+      routes[path]!.POST = async (req: Request) => runRoute(path, req, getState, handler, logger);
     }
   }
 
   return routes;
+}
+
+async function runRoute(
+  path: string,
+  req: Request,
+  getState: () => import("./utils/state.js").DaemonState,
+  handler: RouteHandler,
+  logger?: AppLogger,
+): Promise<Response> {
+  const startedAt = performance.now();
+  const reqId = crypto.randomUUID();
+  const requestLogger = logger?.child?.({ method: req.method, path, reqId }) ?? logger;
+
+  try {
+    const response = await handler(req, getState());
+    const durationMs = Math.round(performance.now() - startedAt);
+    const level = response.status >= 500 ? "error" : response.status >= 400 ? "warn" : "info";
+
+    requestLogger?.log?.(level, "request.completed", {
+      durationMs,
+      state: getState().status,
+      status: response.status,
+    });
+
+    return response;
+  } catch (error) {
+    requestLogger?.error("request.failed", {
+      durationMs: Math.round(performance.now() - startedAt),
+      error: serializeError(error),
+      state: getState().status,
+    });
+
+    return Response.json({ error: "Internal server error" }, { status: 500 });
+  }
 }
