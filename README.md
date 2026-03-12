@@ -61,6 +61,11 @@ cocod mints list
 # History
 cocod history --limit 10
 cocod history --watch
+
+# Logs
+cocod logs
+cocod logs --follow
+cocod logs --path
 ```
 
 ## NPC (Lightning Address)
