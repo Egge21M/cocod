@@ -4,9 +4,10 @@ import { Database } from "bun:sqlite";
 import { mnemonicToSeedSync } from "@scure/bip39";
 import { NPCPlugin } from "coco-cashu-plugin-npc";
 import { privateKeyFromSeedWords } from "nostr-tools/nip06";
-import { finalizeEvent, type EventTemplate } from "nostr-tools";
+import { finalizeEvent, getPublicKey, type EventTemplate } from "nostr-tools";
 import { decryptMnemonic } from "./crypto.js";
 import { SALT_FILE, DB_FILE } from "./config.js";
+import { keyValueKeys, SqliteKeyValueStore, withDefault } from "./key-value.js";
 import type { WalletConfig } from "./config.js";
 
 export async function initializeWallet(
@@ -27,15 +28,23 @@ export async function initializeWallet(
   }
 
   const seed = mnemonicToSeedSync(mnemonic);
-
-  const repo = new SqliteRepositories({ database: new Database(DB_FILE) });
+  const database = new Database(DB_FILE);
+  const repo = new SqliteRepositories({ database });
+  const keyValueStore = new SqliteKeyValueStore(database);
   const walletLogger = logger?.child?.({ component: "coco" }) ?? logger;
   const cocoLogger = walletLogger ?? new ConsoleLogger("Coco", { level: "info" });
+  const npcBaseUrl = "https://npubx.cash";
   const sk = privateKeyFromSeedWords(mnemonic);
+  const pubkey = getPublicKey(sk);
   const signer = async (t: EventTemplate) => finalizeEvent(t, sk);
-  const npcPlugin = new NPCPlugin("https://npubx.cash", signer, {
+  const sinceStore = withDefault(
+    keyValueStore.entry(keyValueKeys.npcSyncSince(npcBaseUrl, pubkey)),
+    0,
+  );
+  const npcPlugin = new NPCPlugin(npcBaseUrl, signer, {
     useWebsocket: true,
     logger: cocoLogger,
+    sinceStore,
   });
   const coco = await initializeCoco({
     repo,
