@@ -76,7 +76,7 @@ async function acquirePidLock(logger: ReturnType<typeof createDaemonLogger>): Pr
 
 export async function startDaemon() {
   const stateManager = new DaemonStateManager();
-  const logger = createDaemonLogger({ mirrorToConsole: true });
+  const logger = createDaemonLogger({ mirrorToConsole: false });
 
   logger.info("daemon.start.requested", {
     pidFile: PID_FILE,

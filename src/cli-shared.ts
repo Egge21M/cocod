@@ -51,16 +51,10 @@ function sleep(ms: number): Promise<void> {
 }
 
 async function waitForDaemonReady(startedAt: number, warningShown: { value: boolean }): Promise<void> {
-  let daemonResponding = false;
-
   for (;;) {
     try {
       const result = await callDaemon("/status");
       if (typeof result.output === "string") {
-        if (!daemonResponding) {
-          daemonResponding = true;
-        }
-
         return;
       }
     } catch {
@@ -76,11 +70,34 @@ async function waitForDaemonReady(startedAt: number, warningShown: { value: bool
   }
 }
 
+function printProgressStep(message: string): void {
+  console.log(`• ${message}`);
+}
+
+function maybePrintFriendlyProgress(path: string, body?: object): void {
+  if (path === "/init") {
+    const mintUrl =
+      body && "mintUrl" in body && typeof body.mintUrl === "string"
+        ? body.mintUrl
+        : "https://mint.minibits.cash/Bitcoin";
+
+    printProgressStep("Preparing wallet...");
+    printProgressStep(`Connecting to mint: ${mintUrl}`);
+    printProgressStep("This can take a few seconds on first run.");
+    return;
+  }
+
+  if (path === "/unlock") {
+    printProgressStep("Unlocking wallet...");
+    printProgressStep("Reconnecting wallet services...");
+  }
+}
+
 export async function startDaemonProcess(): Promise<void> {
   const proc = Bun.spawn({
     cmd: ["bun", "run", `${import.meta.dir}/index.ts`, "daemon"],
-    stdout: "inherit",
-    stderr: "inherit",
+    stdout: "ignore",
+    stderr: "ignore",
     stdin: "ignore",
   });
   proc.unref();
@@ -118,6 +135,7 @@ export async function handleDaemonCommand(
 ): Promise<CommandResponse> {
   try {
     await ensureDaemonRunning();
+    maybePrintFriendlyProgress(path, options.body);
     const result = await callDaemon(path, options);
 
     if (result.error) {
