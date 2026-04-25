@@ -66,6 +66,9 @@ cocod history --watch
 cocod logs
 cocod logs --follow
 cocod logs --path
+
+# Debug a stuck init/unlock in another terminal
+cocod logs --follow
 ```
 
 ## NPC (Lightning Address)

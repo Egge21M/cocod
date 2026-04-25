@@ -1,8 +1,8 @@
 import { mnemonicToSeedSync } from "@scure/bip39";
 import { closeSync, openSync, writeFileSync } from "node:fs";
-import { unlink } from "node:fs/promises";
+import { mkdir, unlink } from "node:fs/promises";
 import process from "node:process";
-import { CONFIG_FILE, SOCKET_PATH, PID_FILE } from "./utils/config.js";
+import { CONFIG_DIR, CONFIG_FILE, SOCKET_PATH, PID_FILE } from "./utils/config.js";
 import { createDaemonLogger, serializeError } from "./utils/logger.js";
 import { DaemonStateManager } from "./utils/state.js";
 import { initializeWallet } from "./utils/wallet.js";
@@ -23,6 +23,8 @@ async function isProcessAlive(pid: number): Promise<boolean> {
 }
 
 async function acquirePidLock(logger: ReturnType<typeof createDaemonLogger>): Promise<void> {
+  await mkdir(CONFIG_DIR, { recursive: true });
+
   const pidFile = Bun.file(PID_FILE);
   if (await pidFile.exists()) {
     const existingPidText = (await pidFile.text()).trim();
@@ -74,7 +76,7 @@ async function acquirePidLock(logger: ReturnType<typeof createDaemonLogger>): Pr
 
 export async function startDaemon() {
   const stateManager = new DaemonStateManager();
-  const logger = createDaemonLogger();
+  const logger = createDaemonLogger({ mirrorToConsole: true });
 
   logger.info("daemon.start.requested", {
     pidFile: PID_FILE,

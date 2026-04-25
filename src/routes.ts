@@ -36,34 +36,50 @@ export function createRouteHandlers(
     },
     "/init": {
       POST: stateManager.requireUninitialized(async (req: Request) => {
+        const initLogger = logger?.child?.({ route: "/init" }) ?? logger;
+
         try {
+          initLogger?.info?.("wallet.init.started");
+
           const body = (await req.json()) as {
             mnemonic?: string;
             passphrase?: string;
             mintUrl?: string;
           };
 
+          initLogger?.info?.("wallet.init.request_parsed", {
+            encrypted: Boolean(body.passphrase),
+            hasMnemonic: Boolean(body.mnemonic),
+            mintUrl: body.mintUrl || "https://mint.minibits.cash/Bitcoin",
+          });
+
           let mnemonic: string;
           if (body.mnemonic) {
+            initLogger?.info?.("wallet.init.validating_mnemonic");
             if (!validateMnemonic(body.mnemonic, wordlist)) {
+              initLogger?.warn?.("wallet.init.invalid_mnemonic");
               return Response.json({ error: "Invalid mnemonic" }, { status: 400 });
             }
             mnemonic = body.mnemonic;
           } else {
+            initLogger?.info?.("wallet.init.generating_mnemonic");
             mnemonic = generateMnemonic(wordlist, 256);
           }
 
           const mintUrl = body.mintUrl || "https://mint.minibits.cash/Bitcoin";
           const encrypted = !!body.passphrase;
 
+          initLogger?.info?.("wallet.init.resetting_config_file", { configFile: CONFIG_FILE });
           await Bun.write(CONFIG_FILE, "");
           await unlink(CONFIG_FILE);
 
           let config: WalletConfig;
 
           if (encrypted && body.passphrase) {
+            initLogger?.info?.("wallet.init.encrypting_mnemonic");
             const { ciphertext, salt } = await encryptMnemonic(mnemonic, body.passphrase);
 
+            initLogger?.info?.("wallet.init.writing_salt_file", { saltFile: SALT_FILE });
             await Bun.write(SALT_FILE, salt);
 
             config = {
@@ -75,6 +91,7 @@ export function createRouteHandlers(
             };
 
             stateManager.setLocked(ciphertext, mintUrl);
+            initLogger?.info?.("wallet.init.completed_locked", { mintUrl, state: "LOCKED" });
           } else {
             config = {
               version: 1,
@@ -84,19 +101,25 @@ export function createRouteHandlers(
               createdAt: new Date().toISOString(),
             };
 
-            const manager = await initializeWallet(config, undefined, logger);
+            initLogger?.info?.("wallet.init.initializing_wallet_manager", { mintUrl });
+            const manager = await initializeWallet(config, undefined, initLogger);
+            initLogger?.info?.("wallet.init.wallet_manager_ready", { mintUrl });
             const seed = mnemonicToSeedSync(mnemonic);
             stateManager.setUnlocked(manager, mintUrl, seed);
+            initLogger?.info?.("wallet.init.completed_unlocked", { mintUrl, state: "UNLOCKED" });
           }
 
+          initLogger?.info?.("wallet.init.writing_config_file", { configFile: CONFIG_FILE });
           await Bun.write(CONFIG_FILE, JSON.stringify(config, null, 2));
 
           const output = encrypted
             ? `Initialized (locked). Mnemonic: ${mnemonic}\nIMPORTANT: Write down this mnemonic and keep it safe!`
             : `Initialized. Mnemonic: ${mnemonic}\nIMPORTANT: Write down this mnemonic and keep it safe!`;
 
+          initLogger?.info?.("wallet.init.response_ready", { encrypted, mintUrl });
           return Response.json({ output });
         } catch (error) {
+          initLogger?.error?.("wallet.init.failed", { error: serializeError(error) });
           const message = error instanceof Error ? error.message : String(error);
           return Response.json({ error: `Init failed: ${message}` }, { status: 500 });
         }
@@ -104,15 +127,21 @@ export function createRouteHandlers(
     },
     "/unlock": {
       POST: stateManager.requireLocked(async (req: Request, state: LockedState) => {
+        const unlockLogger = logger?.child?.({ route: "/unlock" }) ?? logger;
+
         try {
+          unlockLogger?.info?.("wallet.unlock.started", { mintUrl: state.mintUrl });
           const body = (await req.json()) as { passphrase: string };
 
           if (!body.passphrase) {
+            unlockLogger?.warn?.("wallet.unlock.missing_passphrase");
             return Response.json({ error: "Passphrase required" }, { status: 400 });
           }
 
+          unlockLogger?.info?.("wallet.unlock.reading_salt_file", { saltFile: SALT_FILE });
           const salt = await Bun.file(SALT_FILE).text();
           const { decryptMnemonic } = await import("./utils/crypto.js");
+          unlockLogger?.info?.("wallet.unlock.decrypting_mnemonic");
           const mnemonic = await decryptMnemonic(state.encryptedMnemonic, body.passphrase, salt);
 
           const config: WalletConfig = {
@@ -123,13 +152,22 @@ export function createRouteHandlers(
             createdAt: new Date().toISOString(),
           };
 
-          const manager = await initializeWallet(config, undefined, logger);
+          unlockLogger?.info?.("wallet.unlock.initializing_wallet_manager", {
+            mintUrl: state.mintUrl,
+          });
+          const manager = await initializeWallet(config, undefined, unlockLogger);
+          unlockLogger?.info?.("wallet.unlock.wallet_manager_ready", { mintUrl: state.mintUrl });
           const seed = mnemonicToSeedSync(mnemonic);
 
           stateManager.setUnlocked(manager, state.mintUrl, seed);
+          unlockLogger?.info?.("wallet.unlock.completed", {
+            mintUrl: state.mintUrl,
+            state: "UNLOCKED",
+          });
 
           return Response.json({ output: "Unlocked" });
         } catch (error) {
+          unlockLogger?.error?.("wallet.unlock.failed", { error: serializeError(error) });
           const message = error instanceof Error ? error.message : String(error);
           return Response.json({ error: `Unlock failed: ${message}` }, { status: 401 });
         }
@@ -504,11 +542,13 @@ async function runRoute(
     const durationMs = Math.round(performance.now() - startedAt);
     const level = response.status >= 500 ? "error" : response.status >= 400 ? "warn" : "info";
 
-    requestLogger?.log?.(level, "request.completed", {
-      durationMs,
-      state: getState().status,
-      status: response.status,
-    });
+    if (path !== "/status") {
+      requestLogger?.log?.(level, "request.completed", {
+        durationMs,
+        state: getState().status,
+        status: response.status,
+      });
+    }
 
     return response;
   } catch (error) {

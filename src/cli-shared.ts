@@ -42,22 +42,26 @@ export async function isDaemonRunning(): Promise<boolean> {
   }
 }
 
-const DAEMON_POLL_INTERVAL_MS = 100;
+const DAEMON_POLL_INTERVAL_MS = 1_000;
 const DAEMON_SLOW_START_WARNING_MS = 30_000;
+const DAEMON_START_LOG_LINES = 40;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function waitForDaemonReady(startedAt: number, warningShown: { value: boolean }): Promise<void> {
+  let daemonResponding = false;
+
   for (;;) {
     try {
       const result = await callDaemon("/status");
       if (typeof result.output === "string") {
-        const status = result.output;
-        if (status === "LOCKED" || status === "UNLOCKED" || status === "ERROR") {
-          return;
+        if (!daemonResponding) {
+          daemonResponding = true;
         }
+
+        return;
       }
     } catch {
       // Daemon may not be accepting requests yet
@@ -75,8 +79,8 @@ async function waitForDaemonReady(startedAt: number, warningShown: { value: bool
 export async function startDaemonProcess(): Promise<void> {
   const proc = Bun.spawn({
     cmd: ["bun", "run", `${import.meta.dir}/index.ts`, "daemon"],
-    stdout: "ignore",
-    stderr: "ignore",
+    stdout: "inherit",
+    stderr: "inherit",
     stdin: "ignore",
   });
   proc.unref();
@@ -94,6 +98,7 @@ export async function startDaemonProcess(): Promise<void> {
     if (!warningShown.value && Date.now() - startedAt >= DAEMON_SLOW_START_WARNING_MS) {
       warningShown.value = true;
       console.log("Daemon is taking longer than expected, please wait...");
+      console.log(`Tip: run 'cocod logs --follow' or 'tail -n ${DAEMON_START_LOG_LINES} ~/.cocod/daemon.log' in another terminal.`);
     }
   }
 }
