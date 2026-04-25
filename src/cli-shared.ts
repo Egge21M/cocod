@@ -44,6 +44,7 @@ export async function isDaemonRunning(): Promise<boolean> {
 
 const DAEMON_POLL_INTERVAL_MS = 1_000;
 const DAEMON_SLOW_START_WARNING_MS = 30_000;
+const DAEMON_START_TIMEOUT_MS = 60_000;
 const DAEMON_START_LOG_LINES = 40;
 
 function sleep(ms: number): Promise<void> {
@@ -61,9 +62,15 @@ async function waitForDaemonReady(startedAt: number, warningShown: { value: bool
       // Daemon may not be accepting requests yet
     }
 
-    if (!warningShown.value && Date.now() - startedAt >= DAEMON_SLOW_START_WARNING_MS) {
+    const elapsedMs = Date.now() - startedAt;
+
+    if (!warningShown.value && elapsedMs >= DAEMON_SLOW_START_WARNING_MS) {
       warningShown.value = true;
       console.log("Daemon is taking longer than expected, please wait...");
+    }
+
+    if (elapsedMs >= DAEMON_START_TIMEOUT_MS) {
+      throw new Error("Daemon failed to start after 1 minute");
     }
 
     await sleep(DAEMON_POLL_INTERVAL_MS);
@@ -112,10 +119,16 @@ export async function startDaemonProcess(): Promise<void> {
       return;
     }
 
-    if (!warningShown.value && Date.now() - startedAt >= DAEMON_SLOW_START_WARNING_MS) {
+    const elapsedMs = Date.now() - startedAt;
+
+    if (!warningShown.value && elapsedMs >= DAEMON_SLOW_START_WARNING_MS) {
       warningShown.value = true;
       console.log("Daemon is taking longer than expected, please wait...");
       console.log(`Tip: run 'cocod logs --follow' or 'tail -n ${DAEMON_START_LOG_LINES} ~/.cocod/daemon.log' in another terminal.`);
+    }
+
+    if (elapsedMs >= DAEMON_START_TIMEOUT_MS) {
+      throw new Error("Daemon failed to start after 1 minute");
     }
   }
 }
