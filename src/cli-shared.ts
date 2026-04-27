@@ -1,7 +1,6 @@
 import { program } from "commander";
 
-const CONFIG_DIR = `${process.env.HOME || process.env.USERPROFILE}/.cocod`;
-const SOCKET_PATH = process.env.COCOD_SOCKET || `${CONFIG_DIR}/cocod.sock`;
+import { LOG_FILE, SOCKET_PATH } from "./utils/config";
 
 export interface CommandResponse {
   output?: unknown;
@@ -124,7 +123,9 @@ export async function startDaemonProcess(): Promise<void> {
     if (!warningShown.value && elapsedMs >= DAEMON_SLOW_START_WARNING_MS) {
       warningShown.value = true;
       console.log("Daemon is taking longer than expected, please wait...");
-      console.log(`Tip: run 'cocod logs --follow' or 'tail -n ${DAEMON_START_LOG_LINES} ~/.cocod/daemon.log' in another terminal.`);
+      console.log(
+        `Tip: run 'cocod logs --follow' or 'tail -n ${DAEMON_START_LOG_LINES} ${LOG_FILE}' in another terminal.`,
+      );
     }
 
     if (elapsedMs >= DAEMON_START_TIMEOUT_MS) {

@@ -3,8 +3,10 @@
   "version": "0.0.12",
   "transport": {
     "protocol": "http",
+    "baseDirEnv": "COCOD_DIR",
+    "defaultBaseDir": "~/.cocod",
     "unixSocketEnv": "COCOD_SOCKET",
-    "defaultUnixSocket": "~/.cocod/cocod.sock"
+    "defaultUnixSocket": "<COCOD_DIR>/cocod.sock"
   },
   "responseContract": {
     "success": {

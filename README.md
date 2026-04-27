@@ -110,7 +110,7 @@ Defaults:
 
 Logging defaults:
 
-- Structured JSON logs are written to `~/.cocod/daemon.log`
+- Structured JSON logs are written to `<base>/daemon.log`
 - Rotation keeps 5 files at 5 MiB each by default
 - Override with `COCOD_LOG_LEVEL`, `COCOD_LOG_MAX_BYTES`, and `COCOD_LOG_MAX_FILES`
 
