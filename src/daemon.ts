@@ -1,8 +1,9 @@
 import { mnemonicToSeedSync } from "@scure/bip39";
+import { Database } from "bun:sqlite";
 import { closeSync, openSync, writeFileSync } from "node:fs";
 import { mkdir, unlink } from "node:fs/promises";
 import process from "node:process";
-import { CONFIG_DIR, CONFIG_FILE, SOCKET_PATH, PID_FILE } from "./utils/config.js";
+import { CONFIG_DIR, CONFIG_FILE, DB_FILE, SOCKET_PATH, PID_FILE } from "./utils/config.js";
 import { createDaemonLogger, serializeError } from "./utils/logger.js";
 import { DaemonStateManager } from "./utils/state.js";
 import { initializeWallet } from "./utils/wallet.js";
@@ -19,6 +20,33 @@ async function isProcessAlive(pid: number): Promise<boolean> {
     return true;
   } catch {
     return false;
+  }
+}
+
+async function cleanStaleReceives(logger: ReturnType<typeof createDaemonLogger>): Promise<void> {
+  const dbFile = Bun.file(DB_FILE);
+  if (!(await dbFile.exists())) {
+    return;
+  }
+
+  try {
+    const db = new Database(DB_FILE);
+    try {
+      const result = db.run(
+        "DELETE FROM coco_cashu_receive_operations WHERE state = 'executing'",
+      );
+      if (result.changes > 0) {
+        logger.info("daemon.startup.cleaned_stale_receives", {
+          deleted: result.changes,
+        });
+      }
+    } finally {
+      db.close();
+    }
+  } catch (error) {
+    logger.warn("daemon.startup.clean_stale_receives_failed", {
+      error: serializeError(error),
+    });
   }
 }
 
@@ -117,6 +145,9 @@ export async function startDaemon() {
   } catch {
     // File might not exist
   }
+
+  // Clean up any receive operations left in 'executing' from a previous crash.
+  await cleanStaleReceives(logger);
 
   try {
     const configExists = await Bun.file(CONFIG_FILE).exists();
