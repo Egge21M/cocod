@@ -1,6 +1,6 @@
 import { homedir } from "node:os";
 
-export const CONFIG_DIR = `${homedir()}/.cocod`;
+export const CONFIG_DIR = process.env.COCOD_DIR || `${homedir()}/.cocod`;
 export const SOCKET_PATH = process.env.COCOD_SOCKET || `${CONFIG_DIR}/cocod.sock`;
 export const PID_FILE = process.env.COCOD_PID || `${CONFIG_DIR}/cocod.pid`;
 export const LOG_FILE = process.env.COCOD_LOG_FILE || `${CONFIG_DIR}/daemon.log`;

@@ -1,5 +1,7 @@
 import type { Manager } from "coco-cashu-core";
 
+import { CONFIG_FILE } from "./config";
+
 export interface UninitializedState {
   status: "UNINITIALIZED";
 }
@@ -97,7 +99,7 @@ export class DaemonStateManager {
       if (state.status !== "UNINITIALIZED") {
         return Response.json(
           {
-            error: "Wallet already initialized. Delete ~/.cocod/config.json to reset.",
+            error: `Wallet already initialized. Delete ${CONFIG_FILE} to reset.`,
           },
           { status: 409 },
         );

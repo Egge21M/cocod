@@ -59,8 +59,8 @@ All commands are available under `cocod`.
 
 The CLI talks to the daemon over HTTP on a UNIX socket.
 
-- Socket path env var: `COCOD_SOCKET`
-- Default socket: `~/.cocod/cocod.sock`
+- Base directory env var: `COCOD_DIR` (default `~/.cocod`)
+- Socket path env var: `COCOD_SOCKET` (default `<COCOD_DIR>/cocod.sock`)
 
 ### Response shape
 
