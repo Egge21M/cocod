@@ -8,6 +8,8 @@ export const CONFIG_FILE = `${CONFIG_DIR}/config.json`;
 export const SALT_FILE = `${CONFIG_DIR}/salt`;
 export const DB_FILE = `${CONFIG_DIR}/coco.db`;
 
+export const DEFAULT_MINT_URL = "https://mint.cubabitcoin.org";
+
 export interface WalletConfig {
   version: number;
   mnemonic: string;

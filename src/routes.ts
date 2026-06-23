@@ -9,7 +9,7 @@ import { nip19 } from "nostr-tools";
 
 import { unlink } from "node:fs/promises";
 import { encryptMnemonic } from "./utils/crypto.js";
-import { CONFIG_FILE, SALT_FILE } from "./utils/config.js";
+import { CONFIG_FILE, SALT_FILE, DEFAULT_MINT_URL } from "./utils/config.js";
 import { serializeError } from "./utils/logger.js";
 import { initializeWallet } from "./utils/wallet.js";
 import type { WalletConfig } from "./utils/config.js";
@@ -50,7 +50,7 @@ export function createRouteHandlers(
           initLogger?.info?.("wallet.init.request_parsed", {
             encrypted: Boolean(body.passphrase),
             hasMnemonic: Boolean(body.mnemonic),
-            mintUrl: body.mintUrl || "https://mint.minibits.cash/Bitcoin",
+            mintUrl: body.mintUrl || DEFAULT_MINT_URL,
           });
 
           let mnemonic: string;
@@ -66,7 +66,7 @@ export function createRouteHandlers(
             mnemonic = generateMnemonic(wordlist, 256);
           }
 
-          const mintUrl = body.mintUrl || "https://mint.minibits.cash/Bitcoin";
+          const mintUrl = body.mintUrl || DEFAULT_MINT_URL;
           const encrypted = !!body.passphrase;
 
           initLogger?.info?.("wallet.init.resetting_config_file", { configFile: CONFIG_FILE });

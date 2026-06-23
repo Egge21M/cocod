@@ -7,7 +7,7 @@ import {
   parseLogLineCount,
   readRecentLogText,
 } from "./logs";
-import { LOG_FILE } from "./utils/config";
+import { LOG_FILE, DEFAULT_MINT_URL } from "./utils/config";
 import packageJson from "../package.json" with { type: "json" };
 
 const cliVersion = packageJson.version;
@@ -30,7 +30,7 @@ program
   .command("init [mnemonic]")
   .description("Initialize wallet with optional mnemonic (generates one if not provided)")
   .option("--passphrase <passphrase>", "Encrypt wallet with passphrase")
-  .option("--mint-url <url>", "Default mint URL (default: https://mint.minibits.cash/Bitcoin)")
+  .option("--mint-url <url>", `Default mint URL (default: ${DEFAULT_MINT_URL})`)
   .action(
     async (mnemonic: string | undefined, options: { passphrase?: string; mintUrl?: string }) => {
       await handleDaemonCommand("/init", {

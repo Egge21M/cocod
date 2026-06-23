@@ -1,6 +1,6 @@
 import { program } from "commander";
 
-import { LOG_FILE, SOCKET_PATH } from "./utils/config";
+import { LOG_FILE, SOCKET_PATH, DEFAULT_MINT_URL } from "./utils/config";
 
 export interface CommandResponse {
   output?: unknown;
@@ -85,7 +85,7 @@ function maybePrintFriendlyProgress(path: string, body?: object): void {
     const mintUrl =
       body && "mintUrl" in body && typeof body.mintUrl === "string"
         ? body.mintUrl
-        : "https://mint.minibits.cash/Bitcoin";
+        : DEFAULT_MINT_URL;
 
     printProgressStep("Preparing wallet...");
     printProgressStep(`Connecting to mint: ${mintUrl}`);

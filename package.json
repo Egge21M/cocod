@@ -1,6 +1,6 @@
 {
   "name": "@routstr/cocod",
-  "version": "0.0.22",
+  "version": "0.0.24",
   "module": "src/index.ts",
   "type": "module",
   "private": false,
