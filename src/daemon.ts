@@ -1,19 +1,117 @@
 import { mnemonicToSeedSync } from "@scure/bip39";
-import { CONFIG_FILE, SOCKET_PATH, PID_FILE } from "./utils/config.js";
+import { Database } from "bun:sqlite";
+import { closeSync, openSync, writeFileSync } from "node:fs";
+import { mkdir, unlink } from "node:fs/promises";
+import process from "node:process";
+import { CONFIG_DIR, CONFIG_FILE, DB_FILE, SOCKET_PATH, PID_FILE } from "./utils/config.js";
 import { createDaemonLogger, serializeError } from "./utils/logger.js";
 import { DaemonStateManager } from "./utils/state.js";
 import { initializeWallet } from "./utils/wallet.js";
 import { createRouteHandlers, buildRoutes } from "./routes.js";
 import type { WalletConfig } from "./utils/config.js";
 
+async function isProcessAlive(pid: number): Promise<boolean> {
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return false;
+  }
+
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function cleanStaleReceives(logger: ReturnType<typeof createDaemonLogger>): Promise<void> {
+  const dbFile = Bun.file(DB_FILE);
+  if (!(await dbFile.exists())) {
+    return;
+  }
+
+  try {
+    const db = new Database(DB_FILE);
+    try {
+      const result = db.run(
+        "DELETE FROM coco_cashu_receive_operations WHERE state = 'executing'",
+      );
+      if (result.changes > 0) {
+        logger.info("daemon.startup.cleaned_stale_receives", {
+          deleted: result.changes,
+        });
+      }
+    } finally {
+      db.close();
+    }
+  } catch (error) {
+    logger.warn("daemon.startup.clean_stale_receives_failed", {
+      error: serializeError(error),
+    });
+  }
+}
+
+async function acquirePidLock(logger: ReturnType<typeof createDaemonLogger>): Promise<void> {
+  await mkdir(CONFIG_DIR, { recursive: true });
+
+  const pidFile = Bun.file(PID_FILE);
+  if (await pidFile.exists()) {
+    const existingPidText = (await pidFile.text()).trim();
+    const existingPid = Number.parseInt(existingPidText, 10);
+
+    if (await isProcessAlive(existingPid)) {
+      logger.warn("daemon.start.skipped", {
+        reason: "already_running",
+        pid: existingPid,
+        pidFile: PID_FILE,
+      });
+      await logger.flush();
+      console.error(`Error: Daemon is already running with PID ${existingPid}`);
+      process.exit(1);
+    }
+
+    logger.warn("daemon.pid.stale", {
+      pid: existingPidText || null,
+      pidFile: PID_FILE,
+    });
+    try {
+      await unlink(PID_FILE);
+    } catch {
+      // File may already be gone
+    }
+  }
+
+  try {
+    const fd = openSync(PID_FILE, "wx");
+    try {
+      writeFileSync(fd, `${process.pid}`);
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    const currentPidText = (await Bun.file(PID_FILE).text()).trim();
+    const currentPid = Number.parseInt(currentPidText, 10);
+
+    logger.warn("daemon.start.skipped", {
+      reason: "pid_lock_exists",
+      pid: Number.isNaN(currentPid) ? currentPidText : currentPid,
+      pidFile: PID_FILE,
+    });
+    await logger.flush();
+    console.error("Error: Daemon is already starting or running");
+    process.exit(1);
+  }
+}
+
 export async function startDaemon() {
   const stateManager = new DaemonStateManager();
-  const logger = createDaemonLogger();
+  const logger = createDaemonLogger({ mirrorToConsole: false });
 
   logger.info("daemon.start.requested", {
     pidFile: PID_FILE,
     socketPath: SOCKET_PATH,
   });
+
+  await acquirePidLock(logger);
 
   try {
     const testConn = await Bun.connect({
@@ -30,6 +128,11 @@ export async function startDaemon() {
       reason: "already_running",
       socketPath: SOCKET_PATH,
     });
+    try {
+      await unlink(PID_FILE);
+    } catch {
+      // File might not exist
+    }
     await logger.flush();
     console.error(`Error: Daemon is already running on ${SOCKET_PATH}`);
     process.exit(1);
@@ -38,24 +141,13 @@ export async function startDaemon() {
   }
 
   try {
-    await Bun.write(PID_FILE, "");
-    await Bun.file(PID_FILE).delete();
-  } catch {
-    // Directory creation failed or file didn't exist
-  }
-
-  try {
-    await Bun.file(SOCKET_PATH).delete();
-  } catch {
-    // File might not exist
-  }
-  try {
-    await Bun.file(PID_FILE).delete();
+    await unlink(SOCKET_PATH);
   } catch {
     // File might not exist
   }
 
-  await Bun.write(PID_FILE, process.pid.toString());
+  // Clean up any receive operations left in 'executing' from a previous crash.
+  await cleanStaleReceives(logger);
 
   try {
     const configExists = await Bun.file(CONFIG_FILE).exists();
@@ -86,6 +178,7 @@ export async function startDaemon() {
       }
     } else {
       logger.info("wallet.config_missing");
+      logger.info("wallet.uninitialized");
     }
   } catch (error) {
     logger.warn("wallet.config_load_failed", { error: serializeError(error) });
@@ -115,7 +208,7 @@ export async function startDaemon() {
     server?.stop();
 
     try {
-      await Bun.file(PID_FILE).delete();
+      await unlink(PID_FILE);
     } catch {
       // File might not exist
     }
@@ -127,31 +220,38 @@ export async function startDaemon() {
 
   server = Bun.serve({
     unix: SOCKET_PATH,
-    routes: {
-      ...routes,
-      "/stop": {
-        POST: async () => {
-          logger.info("daemon.stop_requested", { reason: "http_stop" });
-          setTimeout(() => {
-            void cleanup("http_stop");
-          }, 100);
-          return Response.json({ output: "Daemon stopping" });
-        },
-      },
-    },
     async fetch(req) {
+      const url = new URL(req.url);
+      const path = url.pathname;
+      const method = req.method;
+
+      // Stop endpoint (special daemon control)
+      if (path === "/stop" && method === "POST") {
+        logger.info("daemon.stop_requested", { reason: "http_stop" });
+        setTimeout(() => {
+          void cleanup("http_stop");
+        }, 100);
+        return Response.json({ output: "Daemon stopping" });
+      }
+
+      // Look up route in the built routes table
+      const route = routes[path];
+      if (route) {
+        const handler = method === "GET" ? route.GET : method === "POST" ? route.POST : undefined;
+        if (handler) {
+          return handler(req);
+        }
+      }
+
       logger.warn("request.unknown_endpoint", {
-        method: req.method,
+        method,
         url: req.url,
       });
-      return Response.json({ error: `Unknown endpoint: ${req.url}` }, { status: 404 });
+      return Response.json({ error: `Unknown endpoint: ${method} ${path}` }, { status: 404 });
     },
   });
 
   logger.info("daemon.started", { socketPath: SOCKET_PATH });
-  if (stateManager.isUninitialized()) {
-    logger.info("wallet.uninitialized");
-  }
 
   process.on("unhandledRejection", (error) => {
     logger.error("daemon.unhandled_rejection", { error: serializeError(error) });

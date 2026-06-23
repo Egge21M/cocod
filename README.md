@@ -66,6 +66,9 @@ cocod history --watch
 cocod logs
 cocod logs --follow
 cocod logs --path
+
+# Debug a stuck init/unlock in another terminal
+cocod logs --follow
 ```
 
 ## NPC (Lightning Address)
@@ -98,15 +101,16 @@ cocod x-cashu handle "<encoded-x-cashu-request>"
 
 Defaults:
 
-- Socket: `~/.cocod/cocod.sock` (or `COCOD_SOCKET`)
-- PID file: `~/.cocod/cocod.pid` (or `COCOD_PID`)
-- Daemon log: `~/.cocod/daemon.log` (or `COCOD_LOG_FILE`)
-- Config: `~/.cocod/config.json`
-- Database: `~/.cocod/coco.db`
+- Base directory: `~/.cocod` (or `COCOD_DIR`)
+- Socket: `<base>/cocod.sock` (or `COCOD_SOCKET`)
+- PID file: `<base>/cocod.pid` (or `COCOD_PID`)
+- Daemon log: `<base>/daemon.log` (or `COCOD_LOG_FILE`)
+- Config: `<base>/config.json`
+- Database: `<base>/coco.db`
 
 Logging defaults:
 
-- Structured JSON logs are written to `~/.cocod/daemon.log`
+- Structured JSON logs are written to `<base>/daemon.log`
 - Rotation keeps 5 files at 5 MiB each by default
 - Override with `COCOD_LOG_LEVEL`, `COCOD_LOG_MAX_BYTES`, and `COCOD_LOG_MAX_FILES`
 

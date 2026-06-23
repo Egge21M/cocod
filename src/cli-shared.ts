@@ -1,7 +1,6 @@
 import { program } from "commander";
 
-const CONFIG_DIR = `${process.env.HOME || process.env.USERPROFILE}/.cocod`;
-const SOCKET_PATH = process.env.COCOD_SOCKET || `${CONFIG_DIR}/cocod.sock`;
+import { LOG_FILE, SOCKET_PATH, DEFAULT_MINT_URL } from "./utils/config";
 
 export interface CommandResponse {
   output?: unknown;
@@ -42,6 +41,64 @@ export async function isDaemonRunning(): Promise<boolean> {
   }
 }
 
+const DAEMON_POLL_INTERVAL_MS = 1_000;
+const DAEMON_SLOW_START_WARNING_MS = 30_000;
+const DAEMON_START_TIMEOUT_MS = 60_000;
+const DAEMON_START_LOG_LINES = 40;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForDaemonReady(startedAt: number, warningShown: { value: boolean }): Promise<void> {
+  for (;;) {
+    try {
+      const result = await callDaemon("/status");
+      if (typeof result.output === "string") {
+        return;
+      }
+    } catch {
+      // Daemon may not be accepting requests yet
+    }
+
+    const elapsedMs = Date.now() - startedAt;
+
+    if (!warningShown.value && elapsedMs >= DAEMON_SLOW_START_WARNING_MS) {
+      warningShown.value = true;
+      console.log("Daemon is taking longer than expected, please wait...");
+    }
+
+    if (elapsedMs >= DAEMON_START_TIMEOUT_MS) {
+      throw new Error("Daemon failed to start after 1 minute");
+    }
+
+    await sleep(DAEMON_POLL_INTERVAL_MS);
+  }
+}
+
+function printProgressStep(message: string): void {
+  console.log(`• ${message}`);
+}
+
+function maybePrintFriendlyProgress(path: string, body?: object): void {
+  if (path === "/init") {
+    const mintUrl =
+      body && "mintUrl" in body && typeof body.mintUrl === "string"
+        ? body.mintUrl
+        : DEFAULT_MINT_URL;
+
+    printProgressStep("Preparing wallet...");
+    printProgressStep(`Connecting to mint: ${mintUrl}`);
+    printProgressStep("This can take a few seconds on first run.");
+    return;
+  }
+
+  if (path === "/unlock") {
+    printProgressStep("Unlocking wallet...");
+    printProgressStep("Reconnecting wallet services...");
+  }
+}
+
 export async function startDaemonProcess(): Promise<void> {
   const proc = Bun.spawn({
     cmd: ["bun", "run", `${import.meta.dir}/index.ts`, "daemon"],
@@ -51,14 +108,30 @@ export async function startDaemonProcess(): Promise<void> {
   });
   proc.unref();
 
-  for (let i = 0; i < 50; i++) {
-    await new Promise((resolve) => setTimeout(resolve, 100));
+  const startedAt = Date.now();
+  const warningShown = { value: false };
+
+  for (;;) {
+    await sleep(DAEMON_POLL_INTERVAL_MS);
     if (await isDaemonRunning()) {
+      await waitForDaemonReady(startedAt, warningShown);
       return;
     }
-  }
 
-  throw new Error("Daemon failed to start within 5 seconds");
+    const elapsedMs = Date.now() - startedAt;
+
+    if (!warningShown.value && elapsedMs >= DAEMON_SLOW_START_WARNING_MS) {
+      warningShown.value = true;
+      console.log("Daemon is taking longer than expected, please wait...");
+      console.log(
+        `Tip: run 'cocod logs --follow' or 'tail -n ${DAEMON_START_LOG_LINES} ${LOG_FILE}' in another terminal.`,
+      );
+    }
+
+    if (elapsedMs >= DAEMON_START_TIMEOUT_MS) {
+      throw new Error("Daemon failed to start after 1 minute");
+    }
+  }
 }
 
 export async function ensureDaemonRunning(): Promise<void> {
@@ -76,6 +149,7 @@ export async function handleDaemonCommand(
 ): Promise<CommandResponse> {
   try {
     await ensureDaemonRunning();
+    maybePrintFriendlyProgress(path, options.body);
     const result = await callDaemon(path, options);
 
     if (result.error) {
