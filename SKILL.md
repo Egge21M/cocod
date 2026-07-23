@@ -1,7 +1,7 @@
 ---
 name: cocod
-description: A Cashu ecash wallet CLI for Bitcoin and Lightning payments. Use when managing Cashu tokens, sending/receiving payments via Lightning (bolt11) or ecash, handling HTTP 402 X-Cashu payment requests, or viewing wallet history.
-compatibility: Requires cocod CLI to be installed. Supports Cashu ecash protocol, Lightning Network payments, and NUT-24 HTTP 402 X-Cashu flows.
+description: A Cashu ecash wallet CLI for Bitcoin and Lightning payments. Use when managing Cashu tokens, sending/receiving payments via Lightning (bolt11, bolt12 offers), onchain addresses, Cashu payment requests (creq) over Nostr/HTTP/inband, ecash over Nostr DM, handling HTTP 402 X-Cashu payment requests, or viewing wallet history.
+compatibility: Requires cocod CLI to be installed. Supports Cashu ecash protocol, Lightning Network payments (BOLT11 and BOLT12), onchain payments (NUT-30), NUT-18 payment requests with Nostr transport, and NUT-24 HTTP 402 X-Cashu flows.
 metadata:
   project: cocod
   type: cashu-wallet
@@ -97,6 +97,17 @@ cocod receive cashu <token>
 
 # Create Lightning invoice to receive
 cocod receive bolt11 <amount> [--mint-url <url>]
+
+# Create a Cashu payment request (NUT-18, paid via Nostr DM to this wallet)
+# The daemon must stay running for the payment to be claimed.
+cocod receive creq <amount> [--description <text>] [--mint-url <url>]
+
+# Get an onchain deposit address from the mint (NUT-30)
+# --amount only wraps the address as a bitcoin: URI; whatever arrives is minted.
+cocod receive onchain [--amount <sats>] [--mint-url <url>]
+
+# Create a BOLT12 offer (NUT-25); omit --amount for a reusable amountless offer
+cocod receive bolt12 [--amount <sats>] [--description <text>] [--mint-url <url>]
 ```
 
 ### Sending Payments
@@ -107,8 +118,22 @@ AGENT rule: commands in this section spend wallet funds. Ask for permission firs
 # Create Cashu token to send to someone
 cocod send cashu <amount> [--mint-url <url>]
 
+# Deliver the token to an npub via Nostr DM instead of printing it
+cocod send cashu <amount> --to <npub> [--mint-url <url>]
+
 # Pay a Lightning invoice
 cocod send bolt11 <invoice> [--mint-url <url>]
+
+# Pay a Cashu payment request (NUT-18; inband, HTTP, or Nostr transport)
+# --amount is required when the request has no amount. Only sat requests are supported.
+cocod send creq <request> [--amount <sats>] [--mint-url <url>]
+
+# Pay to an onchain Bitcoin address or bitcoin: URI (NUT-30)
+# Fee defaults to the mint's cheapest option; onchain melts settle asynchronously.
+cocod send onchain <address> [amount] [--fee-index <index>] [--mint-url <url>]
+
+# Pay a BOLT12 offer (NUT-25); --amount is required for amountless offers
+cocod send bolt12 <offer> [--amount <sats>] [--mint-url <url>]
 ```
 
 ### HTTP 402 Web Payments (NUT-24)
@@ -234,5 +259,9 @@ cocod history --limit 10
 - **Mint**: Server that issues and redeems Cashu tokens
 - **Token**: Transferable Cashu string representing satoshi value
 - **Bolt11**: Lightning Network invoice format
+- **Bolt12**: Lightning offer format (`lno1...`); offers can be amountless and reusable
+- **Payment request (creq)**: NUT-18 encoded request (`creqA...`) that tells a payer how to
+  deliver ecash — inband, HTTP POST, or a NIP-17 Nostr DM
+- **Onchain**: NUT-30 mint deposits/withdrawals using regular Bitcoin addresses
 - **NPC**: Lightning Address service for receiving payments
 - **Mnemonic**: Seed phrase for wallet recovery
