@@ -8,7 +8,7 @@ import {
   type OnchainMeltQuote,
   type SendTarget,
 } from "@cashu/coco-core";
-import { generateMnemonic, validateMnemonic } from "@scure/bip39";
+import { generateMnemonic, mnemonicToSeedSync, validateMnemonic } from "@scure/bip39";
 import { wordlist } from "@scure/bip39/wordlists/english.js";
 import { nip19 } from "nostr-tools";
 
@@ -97,7 +97,8 @@ export function createRouteHandlers(
               undefined,
               logger,
             );
-            stateManager.setUnlocked(manager, mintUrl, nostrSk, npcAccount);
+            const seed = mnemonicToSeedSync(mnemonic);
+            stateManager.setUnlocked(manager, mintUrl, seed, nostrSk, npcAccount);
           }
 
           await Bun.write(CONFIG_FILE, JSON.stringify(config, null, 2));
@@ -138,8 +139,9 @@ export function createRouteHandlers(
             undefined,
             logger,
           );
+          const seed = mnemonicToSeedSync(mnemonic);
 
-          stateManager.setUnlocked(manager, state.mintUrl, nostrSk, npcAccount);
+          stateManager.setUnlocked(manager, state.mintUrl, seed, nostrSk, npcAccount);
 
           return Response.json({ output: "Unlocked" });
         } catch (error) {
