@@ -410,11 +410,12 @@ export function createRouteHandlers(
               { status: 400 },
             );
           }
-          if (parsed.paymentRequest.nut10) {
-            // this coco release cannot construct P2PK-locked outputs; paying with
-            // unlocked proofs would silently ignore the receiver's requested lock
+          const nut10 = parsed.paymentRequest.nut10;
+          if (nut10 && parsed.transport.type !== "nostr") {
+            // core's http/inband path ignores NUT-10 in this release and would pay
+            // unlocked, silently dropping the receiver's requested lock
             return Response.json(
-              { error: "P2PK-locked payment requests are not supported yet" },
+              { error: "Locked payment requests are only supported over nostr transport" },
               { status: 400 },
             );
           }
@@ -475,7 +476,30 @@ export function createRouteHandlers(
                 { status: 400 },
               );
             }
-            const prepared = await state.manager.ops.send.prepare({ mintUrl, amount });
+            let target: { type: "p2pk"; pubkey: string } | undefined;
+            if (nut10) {
+              if (nut10.kind !== "P2PK") {
+                return Response.json(
+                  { error: `Unsupported spending condition: ${nut10.kind}` },
+                  { status: 400 },
+                );
+              }
+              if (nut10.tags && nut10.tags.length > 0) {
+                return Response.json(
+                  {
+                    error: "P2PK requests with additional constraints (tags) are not supported",
+                  },
+                  { status: 400 },
+                );
+              }
+              // honor the receiver's lock: coco builds P2PK-locked outputs for the target
+              target = { type: "p2pk", pubkey: nut10.data };
+            }
+            const prepared = await state.manager.ops.send.prepare({
+              mintUrl,
+              amount,
+              ...(target ? { target } : {}),
+            });
             const result = await state.manager.ops.send.execute(prepared);
             const payload = JSON.stringify({
               ...(parsed.paymentRequest.id ? { id: parsed.paymentRequest.id } : {}),

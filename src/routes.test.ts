@@ -267,14 +267,14 @@ describe("routes", () => {
     expect(body.error).toBe("Amount must be a positive integer");
   });
 
-  test("/send/creq rejects a P2PK-locked request", async () => {
+  test("/send/creq rejects a locked request on non-nostr transports", async () => {
     const stubManager = {
       paymentRequests: {
         parse: async () => ({
           unit: "sat",
           amount: undefined,
           payableMints: ["https://mint.example.com"],
-          transport: { type: "nostr", target: "npub1invalid" },
+          transport: { type: "http", url: "https://receiver.example.com/pay" },
           paymentRequest: { id: "abc", nut10: { kind: "P2PK", data: "02deadbeef" } },
         }),
       },
@@ -289,7 +289,66 @@ describe("routes", () => {
 
     const body = (await response.json()) as { error?: string };
     expect(response.status).toBe(400);
-    expect(body.error).toBe("P2PK-locked payment requests are not supported yet");
+    expect(body.error).toBe("Locked payment requests are only supported over nostr transport");
+  });
+
+  test("/send/creq rejects non-P2PK spending conditions", async () => {
+    const stubManager = {
+      paymentRequests: {
+        parse: async () => ({
+          unit: "sat",
+          amount: undefined,
+          payableMints: ["https://mint.example.com"],
+          transport: {
+            type: "nostr",
+            target: "npub180cvv07tjdrrgpa0j7j7tmnyl2yr6yr7l8j4s3evf6u64th6gkwsyjh6w6",
+          },
+          paymentRequest: { id: "abc", nut10: { kind: "HTLC", data: "deadbeef" } },
+        }),
+      },
+    };
+    const stateManager = unlockedStateManager(stubManager);
+    const routes = createRouteHandlers(stateManager);
+
+    const response = await routes["/send/creq"]!.POST!(
+      postJson("/send/creq", { request: "creqA...", amount: 21 }),
+      stateManager.getState(),
+    );
+
+    const body = (await response.json()) as { error?: string };
+    expect(response.status).toBe(400);
+    expect(body.error).toBe("Unsupported spending condition: HTLC");
+  });
+
+  test("/send/creq rejects P2PK requests with constraint tags", async () => {
+    const stubManager = {
+      paymentRequests: {
+        parse: async () => ({
+          unit: "sat",
+          amount: undefined,
+          payableMints: ["https://mint.example.com"],
+          transport: {
+            type: "nostr",
+            target: "npub180cvv07tjdrrgpa0j7j7tmnyl2yr6yr7l8j4s3evf6u64th6gkwsyjh6w6",
+          },
+          paymentRequest: {
+            id: "abc",
+            nut10: { kind: "P2PK", data: "02deadbeef", tags: [["locktime", "1700000000"]] },
+          },
+        }),
+      },
+    };
+    const stateManager = unlockedStateManager(stubManager);
+    const routes = createRouteHandlers(stateManager);
+
+    const response = await routes["/send/creq"]!.POST!(
+      postJson("/send/creq", { request: "creqA...", amount: 21 }),
+      stateManager.getState(),
+    );
+
+    const body = (await response.json()) as { error?: string };
+    expect(response.status).toBe(400);
+    expect(body.error).toBe("P2PK requests with additional constraints (tags) are not supported");
   });
 
   test("/send/creq rejects a conflicting --amount", async () => {
@@ -299,7 +358,10 @@ describe("routes", () => {
           unit: "sat",
           amount: { toNumber: () => 100 },
           payableMints: ["https://mint.example.com"],
-          transport: { type: "nostr", target: "npub1invalid" },
+          transport: {
+            type: "nostr",
+            target: "npub180cvv07tjdrrgpa0j7j7tmnyl2yr6yr7l8j4s3evf6u64th6gkwsyjh6w6",
+          },
           paymentRequest: { id: "abc" },
         }),
       },
