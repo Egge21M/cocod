@@ -124,6 +124,8 @@ upgrading and delete the copy once you're settled.
 
 Defaults:
 
+- State directory: `~/.cocod` (or `COCOD_DIR`; config, database, socket, pid, and log all
+  live under it — handy for running a second isolated instance)
 - Socket: `~/.cocod/cocod.sock` (or `COCOD_SOCKET`)
 - PID file: `~/.cocod/cocod.pid` (or `COCOD_PID`)
 - Daemon log: `~/.cocod/daemon.log` (or `COCOD_LOG_FILE`)
