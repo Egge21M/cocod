@@ -11,8 +11,15 @@ describe("DaemonStateManager", () => {
     stateManager.setLocked("encrypted", "https://mint.example.com");
     expect(stateManager.getState().status).toBe("LOCKED");
 
-    const fakeManager = {} as unknown as import("coco-cashu-core").Manager;
-    stateManager.setUnlocked(fakeManager, "https://mint.example.com", new Uint8Array([1, 2, 3]));
+    const fakeManager = {} as unknown as import("@cashu/coco-core").Manager;
+    const fakeNpcAccount = {} as unknown as import("coco-cashu-plugin-npc").NPCAccountApi;
+    stateManager.setUnlocked(
+      fakeManager,
+      "https://mint.example.com",
+      new Uint8Array([1, 2, 3]),
+      new Uint8Array([4, 5, 6]),
+      fakeNpcAccount,
+    );
     expect(stateManager.getState().status).toBe("UNLOCKED");
 
     stateManager.setError("boom");
@@ -39,8 +46,15 @@ describe("DaemonStateManager", () => {
 
   test("requireLocked returns 409 when already unlocked", async () => {
     const stateManager = new DaemonStateManager();
-    const fakeManager = {} as unknown as import("coco-cashu-core").Manager;
-    stateManager.setUnlocked(fakeManager, "https://mint.example.com", new Uint8Array([1]));
+    const fakeManager = {} as unknown as import("@cashu/coco-core").Manager;
+    const fakeNpcAccount = {} as unknown as import("coco-cashu-plugin-npc").NPCAccountApi;
+    stateManager.setUnlocked(
+      fakeManager,
+      "https://mint.example.com",
+      new Uint8Array([1]),
+      new Uint8Array([2]),
+      fakeNpcAccount,
+    );
 
     const handler = stateManager.requireLocked(async () => {
       return Response.json({ output: "ok" });

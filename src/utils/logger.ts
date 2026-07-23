@@ -1,7 +1,7 @@
 import { appendFile, mkdir, rename, stat, unlink } from "node:fs/promises";
 import { dirname } from "node:path";
 
-import type { Logger } from "coco-cashu-core";
+import type { Logger } from "@cashu/coco-core";
 
 import { LOG_FILE } from "./config.js";
 
@@ -39,11 +39,16 @@ const DEFAULT_MAX_FILES = 5;
 const DEFAULT_SERVICE = "cocod-daemon";
 const REDACTED_KEYS = new Set([
   "authorization",
+  "content",
   "encryptedMnemonic",
   "invoice",
   "mnemonic",
+  "nostrSk",
   "passphrase",
+  "payload",
+  "proofs",
   "request",
+  "secretKey",
   "seed",
   "token",
   "xCashuHeader",

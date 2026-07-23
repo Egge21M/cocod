@@ -1,8 +1,4 @@
-import {
-  getEncodedToken,
-  type InbandPaymentRequestExecutionResult,
-  type Logger,
-} from "coco-cashu-core";
+import { getEncodedToken, type Logger, type Manager } from "@cashu/coco-core";
 import { generateMnemonic, mnemonicToSeedSync, validateMnemonic } from "@scure/bip39";
 import { wordlist } from "@scure/bip39/wordlists/english.js";
 import { nip19 } from "nostr-tools";
@@ -10,6 +6,7 @@ import { nip19 } from "nostr-tools";
 import { encryptMnemonic } from "./utils/crypto.js";
 import { CONFIG_FILE, SALT_FILE } from "./utils/config.js";
 import { serializeError } from "./utils/logger.js";
+import { sendPaymentDm } from "./utils/nostr.js";
 import { initializeWallet } from "./utils/wallet.js";
 import type { WalletConfig } from "./utils/config.js";
 import type { AppLogger } from "./utils/logger.js";
@@ -83,9 +80,13 @@ export function createRouteHandlers(
               createdAt: new Date().toISOString(),
             };
 
-            const manager = await initializeWallet(config, undefined, logger);
+            const { manager, nostrSk, npcAccount } = await initializeWallet(
+              config,
+              undefined,
+              logger,
+            );
             const seed = mnemonicToSeedSync(mnemonic);
-            stateManager.setUnlocked(manager, mintUrl, seed);
+            stateManager.setUnlocked(manager, mintUrl, seed, nostrSk, npcAccount);
           }
 
           await Bun.write(CONFIG_FILE, JSON.stringify(config, null, 2));
@@ -122,10 +123,14 @@ export function createRouteHandlers(
             createdAt: new Date().toISOString(),
           };
 
-          const manager = await initializeWallet(config, undefined, logger);
+          const { manager, nostrSk, npcAccount } = await initializeWallet(
+            config,
+            undefined,
+            logger,
+          );
           const seed = mnemonicToSeedSync(mnemonic);
 
-          stateManager.setUnlocked(manager, state.mintUrl, seed);
+          stateManager.setUnlocked(manager, state.mintUrl, seed, nostrSk, npcAccount);
 
           return Response.json({ output: "Unlocked" });
         } catch (error) {
@@ -137,7 +142,7 @@ export function createRouteHandlers(
     "/npc/address": {
       GET: stateManager.requireUnlocked(async (_req, state: UnlockedState) => {
         try {
-          const info = await state.manager.ext.npc.getInfo();
+          const info = await state.npcAccount.getInfo();
           if (info.name) {
             return Response.json({ output: `${info.name}@npubx.cash` });
           }
@@ -160,7 +165,7 @@ export function createRouteHandlers(
             return Response.json({ error: "Username is required" }, { status: 400 });
           }
           if (confirm) {
-            const res = await state.manager.ext.npc.setUsername(username, confirm);
+            const res = await state.npcAccount.setUsername(username, confirm);
             if (res.success) {
               return Response.json({ output: res });
             } else {
@@ -169,7 +174,7 @@ export function createRouteHandlers(
               });
             }
           } else {
-            const res = await state.manager.ext.npc.setUsername(username);
+            const res = await state.npcAccount.setUsername(username);
             if (res.success) {
               return Response.json({ output: res });
             } else if (res.success === false) {
@@ -193,11 +198,11 @@ export function createRouteHandlers(
     "/balance": {
       GET: stateManager.requireUnlocked(async (_req, state: UnlockedState) => {
         try {
-          const balance = await state.manager.wallet.getBalances();
+          const balances = await state.manager.wallet.balances.byMint();
           const augmentedBalance: Record<string, { [unit: string]: number }> = {};
-          Object.keys(balance).forEach((url) => {
-            augmentedBalance[url] = { sats: balance[url] || 0 };
-          });
+          for (const [url, snapshot] of Object.entries(balances)) {
+            augmentedBalance[url] = { sats: snapshot.spendable.toNumber() };
+          }
           return Response.json({ output: augmentedBalance });
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
@@ -212,7 +217,7 @@ export function createRouteHandlers(
           const token = body.token;
           const preparedOp = await state.manager.ops.receive.prepare({ token });
           await state.manager.ops.receive.execute(preparedOp);
-          return Response.json({ output: `Received ${preparedOp.amount}` });
+          return Response.json({ output: `Received ${preparedOp.amount.toNumber()}` });
         } catch (e) {
           if (e instanceof Error) {
             return Response.json({ error: e.message });
@@ -226,12 +231,12 @@ export function createRouteHandlers(
         try {
           const body = (await req.json()) as { amount: number; mintUrl?: string };
           const mintUrl = body.mintUrl || state.mintUrl;
-          const quote = await state.manager.ops.mint.prepare({
+          const quote = await state.manager.quotes.mint.create({
             mintUrl,
             method: "bolt11",
             amount: body.amount,
-            methodData: {},
           });
+          await state.manager.ops.mint.prepare({ quote, amount: body.amount });
           return Response.json({ output: quote.request });
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
@@ -239,14 +244,100 @@ export function createRouteHandlers(
         }
       }),
     },
+    "/receive/creq": {
+      POST: stateManager.requireUnlocked(async (req, state: UnlockedState) => {
+        try {
+          const body = (await req.json()) as {
+            amount?: number;
+            description?: string;
+            mintUrl?: string;
+          };
+          if (!body.amount || !Number.isFinite(body.amount) || body.amount <= 0) {
+            return Response.json({ error: "Amount must be a positive number" }, { status: 400 });
+          }
+          const mintUrl = body.mintUrl || state.mintUrl;
+          const operation = await state.manager.paymentRequests.incoming.create({
+            amount: body.amount,
+            unit: "sat",
+            mints: [mintUrl],
+            ...(body.description ? { description: body.description } : {}),
+            transport: "nostr",
+            encoding: "creqA",
+          });
+          return Response.json({ output: operation.encodedRequest });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          return Response.json(
+            { error: `Failed to create payment request: ${message}` },
+            { status: 500 },
+          );
+        }
+      }),
+    },
+    "/receive/onchain": {
+      POST: stateManager.requireUnlocked(async (req, state: UnlockedState) => {
+        try {
+          const body = (await req.json()) as { amount?: number; mintUrl?: string };
+          const mintUrl = body.mintUrl || state.mintUrl;
+          const quote = await state.manager.quotes.mint.create({ mintUrl, method: "onchain" });
+          const address = quote.request;
+          const output =
+            body.amount && body.amount > 0
+              ? `bitcoin:${address}?amount=${formatBtcAmount(body.amount)}`
+              : address;
+          return Response.json({ output });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          return Response.json(
+            { error: `Failed to create deposit address: ${message}` },
+            { status: 500 },
+          );
+        }
+      }),
+    },
+    "/receive/bolt12": {
+      POST: stateManager.requireUnlocked(async (req, state: UnlockedState) => {
+        try {
+          const body = (await req.json()) as {
+            amount?: number;
+            description?: string;
+            mintUrl?: string;
+          };
+          const mintUrl = body.mintUrl || state.mintUrl;
+          const quote = await state.manager.quotes.mint.create({
+            mintUrl,
+            method: "bolt12",
+            ...(body.amount && body.amount > 0 ? { amount: body.amount } : {}),
+            ...(body.description ? { description: body.description } : {}),
+          });
+          return Response.json({ output: quote.request });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          return Response.json({ error: `Failed to create offer: ${message}` }, { status: 500 });
+        }
+      }),
+    },
     "/send/cashu": {
       POST: stateManager.requireUnlocked(async (req, state: UnlockedState) => {
         try {
-          const body = (await req.json()) as { amount: number; mintUrl?: string };
+          const body = (await req.json()) as { amount: number; mintUrl?: string; to?: string };
           const mintUrl = body.mintUrl || state.mintUrl;
           const prepared = await state.manager.ops.send.prepare({ mintUrl, amount: body.amount });
           const result = await state.manager.ops.send.execute(prepared);
           const token = state.manager.wallet.encodeToken(result.token);
+          if (body.to) {
+            try {
+              await sendPaymentDm(state.nostrSk, body.to, token);
+            } catch (error) {
+              await rollbackSendOperation(state.manager, result.operation.id);
+              const message = error instanceof Error ? error.message : String(error);
+              return Response.json(
+                { error: `Failed to deliver token: ${message}` },
+                { status: 500 },
+              );
+            }
+            return Response.json({ output: `Sent ${body.amount} sats to ${body.to}` });
+          }
           return Response.json({ output: token });
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
@@ -259,13 +350,164 @@ export function createRouteHandlers(
         try {
           const body = (await req.json()) as { invoice: string; mintUrl?: string };
           const mintUrl = body.mintUrl || state.mintUrl;
-          const prepared = await state.manager.ops.melt.prepare({
+          const quote = await state.manager.quotes.melt.create({
             mintUrl,
             method: "bolt11",
             methodData: { invoice: body.invoice },
           });
+          const prepared = await state.manager.ops.melt.prepare({ quote });
           await state.manager.ops.melt.execute(prepared);
           return Response.json({ output: `Paid invoice: ${body.invoice}` });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          return Response.json({ error: `Payment failed: ${message}` }, { status: 500 });
+        }
+      }),
+    },
+    "/send/creq": {
+      POST: stateManager.requireUnlocked(async (req, state: UnlockedState) => {
+        try {
+          const body = (await req.json()) as {
+            request?: string;
+            amount?: number;
+            mintUrl?: string;
+          };
+          if (!body.request) {
+            return Response.json({ error: "Request is required" }, { status: 400 });
+          }
+          const parsed = await state.manager.paymentRequests.parse(body.request);
+          if (parsed.unit !== "sat") {
+            // fail before proofs move: a unit-mismatched payload is rejected receiver-side
+            // only after delivery
+            return Response.json(
+              { error: `Only sat requests are supported (request unit: ${parsed.unit})` },
+              { status: 400 },
+            );
+          }
+          const mintUrl = pickPayableMint(parsed.payableMints, body.mintUrl, state.mintUrl);
+          if (!mintUrl) {
+            return Response.json(
+              { error: "No trusted mint with sufficient balance satisfies this request" },
+              { status: 400 },
+            );
+          }
+          if (parsed.transport.type === "nostr") {
+            // core's execute() throws for nostr transports; deliver the payload ourselves
+            const amount = parsed.amount?.toNumber() ?? body.amount;
+            if (!amount || amount <= 0) {
+              return Response.json(
+                { error: "Request has no amount. Use --amount to specify one" },
+                { status: 400 },
+              );
+            }
+            const prepared = await state.manager.ops.send.prepare({ mintUrl, amount });
+            const result = await state.manager.ops.send.execute(prepared);
+            const payload = JSON.stringify({
+              ...(parsed.paymentRequest.id ? { id: parsed.paymentRequest.id } : {}),
+              mint: mintUrl,
+              unit: parsed.unit,
+              proofs: result.token.proofs,
+            });
+            try {
+              await sendPaymentDm(state.nostrSk, parsed.transport.target, payload);
+            } catch (error) {
+              await rollbackSendOperation(state.manager, result.operation.id);
+              const message = error instanceof Error ? error.message : String(error);
+              return Response.json(
+                { error: `Failed to deliver payment: ${message}` },
+                { status: 500 },
+              );
+            }
+            return Response.json({ output: `Paid request: ${body.request}` });
+          }
+          const prepared = await state.manager.paymentRequests.prepare(parsed, {
+            mintUrl,
+            ...(body.amount ? { amount: body.amount } : {}),
+          });
+          const res = await state.manager.paymentRequests.execute(prepared);
+          if (res.type === "inband") {
+            return Response.json({ output: getEncodedToken(res.token) });
+          }
+          return Response.json({ output: `Paid request: ${body.request}` });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          return Response.json({ error: `Payment failed: ${message}` }, { status: 500 });
+        }
+      }),
+    },
+    "/send/onchain": {
+      POST: stateManager.requireUnlocked(async (req, state: UnlockedState) => {
+        try {
+          const body = (await req.json()) as {
+            address?: string;
+            amount?: number;
+            feeIndex?: number;
+            mintUrl?: string;
+          };
+          if (!body.address) {
+            return Response.json({ error: "Address is required" }, { status: 400 });
+          }
+          const target = parseOnchainTarget(body.address);
+          if (!target) {
+            return Response.json({ error: "Invalid Bitcoin address" }, { status: 400 });
+          }
+          const amount = body.amount ?? target.amountSats;
+          if (!amount || !Number.isFinite(amount) || amount <= 0) {
+            return Response.json({ error: "Amount must be a positive number" }, { status: 400 });
+          }
+          const mintUrl = body.mintUrl || state.mintUrl;
+          const quote = await state.manager.quotes.melt.create({
+            mintUrl,
+            method: "onchain",
+            methodData: { address: target.address, amountSats: amount },
+          });
+          const feeOptions = quote.fee_options;
+          if (!feeOptions || feeOptions.length === 0) {
+            return Response.json({ error: "Mint returned no fee options" }, { status: 500 });
+          }
+          const feeIndex = body.feeIndex ?? cheapestFeeIndex(feeOptions);
+          const selected = feeOptions.find((option) => option.fee_index === feeIndex);
+          if (!selected) {
+            const available = feeOptions.map((option) => option.fee_index).join(", ");
+            return Response.json(
+              { error: `Invalid fee index ${feeIndex}. Available: ${available}` },
+              { status: 400 },
+            );
+          }
+          const prepared = await state.manager.ops.melt.prepare({ quote, feeIndex });
+          await state.manager.ops.melt.execute(prepared);
+          return Response.json({
+            output: `Sending ${amount} sats to ${target.address} (fee option ${feeIndex}, pending)`,
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          return Response.json({ error: `Payment failed: ${message}` }, { status: 500 });
+        }
+      }),
+    },
+    "/send/bolt12": {
+      POST: stateManager.requireUnlocked(async (req, state: UnlockedState) => {
+        try {
+          const body = (await req.json()) as {
+            offer?: string;
+            amount?: number;
+            mintUrl?: string;
+          };
+          if (!body.offer) {
+            return Response.json({ error: "Offer is required" }, { status: 400 });
+          }
+          const mintUrl = body.mintUrl || state.mintUrl;
+          const quote = await state.manager.quotes.melt.create({
+            mintUrl,
+            method: "bolt12",
+            methodData: {
+              offer: body.offer,
+              ...(body.amount ? { amountSats: body.amount } : {}),
+            },
+          });
+          const prepared = await state.manager.ops.melt.prepare({ quote });
+          await state.manager.ops.melt.execute(prepared);
+          return Response.json({ output: `Paid offer: ${body.offer}` });
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           return Response.json({ error: `Payment failed: ${message}` }, { status: 500 });
@@ -287,7 +529,7 @@ export function createRouteHandlers(
               : "from any mint";
           const matchingMints =
             parsed.payableMints.length > 0 ? parsed.payableMints.join("\n") : "No matching mint!";
-          const msg = `Request requires payment of ${parsed.amount || 0} Sats ${mintMsg}.\nMatching mints:\n${matchingMints}`;
+          const msg = `Request requires payment of ${parsed.amount?.toNumber() ?? 0} Sats ${mintMsg}.\nMatching mints:\n${matchingMints}`;
           return Response.json({ output: msg });
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
@@ -327,14 +569,11 @@ export function createRouteHandlers(
 
           const prepared = await state.manager.paymentRequests.prepare(parsed, { mintUrl });
 
-          const res = (await state.manager.paymentRequests.execute(
-            prepared,
-          )) as InbandPaymentRequestExecutionResult;
-          const xCashuHeader = `X-Cashu: ${getEncodedToken(res.token)}`;
-
-          if (!xCashuHeader) {
+          const res = await state.manager.paymentRequests.execute(prepared);
+          if (res.type !== "inband") {
             return Response.json({ error: "Failed to settle X-Cashu request" }, { status: 500 });
           }
+          const xCashuHeader = `X-Cashu: ${getEncodedToken(res.token)}`;
 
           return Response.json({ output: xCashuHeader });
         } catch (error) {
@@ -405,7 +644,7 @@ export function createRouteHandlers(
         }
 
         const entries = await state.manager.history.getPaginatedHistory(offset, limit);
-        return Response.json({ output: entries });
+        return Response.json({ output: entries.map(sanitizeHistoryEntry) });
       }),
     },
     "/events": {
@@ -519,4 +758,92 @@ async function runRoute(
 
     return Response.json({ error: "Internal server error" }, { status: 500 });
   }
+}
+
+export function pickPayableMint(
+  payableMints: string[],
+  requested: string | undefined,
+  fallback: string,
+): string | null {
+  if (requested) {
+    return payableMints.includes(requested) ? requested : null;
+  }
+  if (payableMints.includes(fallback)) {
+    return fallback;
+  }
+  return payableMints[0] ?? null;
+}
+
+export function formatBtcAmount(sats: number): string {
+  return (sats / 1e8).toFixed(8).replace(/0+$/, "").replace(/\.$/, "");
+}
+
+export function parseOnchainTarget(input: string): { address: string; amountSats?: number } | null {
+  const trimmed = input.trim();
+  if (/^bitcoin:/i.test(trimmed)) {
+    const withoutScheme = trimmed.slice("bitcoin:".length);
+    const [addressPart, queryPart] = withoutScheme.split("?", 2);
+    const address = addressPart?.replace(/^\/\//, "");
+    if (!address || !looksLikeBitcoinAddress(address)) {
+      return null;
+    }
+    let amountSats: number | undefined;
+    if (queryPart) {
+      // encoders may emit ALL-UPPERCASE URIs for QR alphanumeric mode; keys are
+      // matched case-insensitively and the amount value is BTC decimal
+      for (const pair of queryPart.split("&")) {
+        const [key, value] = pair.split("=", 2);
+        if (key?.toLowerCase() === "amount" && value) {
+          const btc = Number.parseFloat(value);
+          if (Number.isFinite(btc) && btc > 0) {
+            amountSats = Math.round(btc * 1e8);
+          }
+        }
+      }
+    }
+    return { address, ...(amountSats !== undefined ? { amountSats } : {}) };
+  }
+  if (looksLikeBitcoinAddress(trimmed)) {
+    return { address: trimmed };
+  }
+  return null;
+}
+
+function looksLikeBitcoinAddress(value: string): boolean {
+  return (
+    /^(bc1|tb1|bcrt1)[a-z0-9]{8,100}$/i.test(value) ||
+    /^[13mn2][a-km-zA-HJ-NP-Z1-9]{25,39}$/.test(value)
+  );
+}
+
+export function cheapestFeeIndex(
+  options: { fee_index: number; fee_reserve: { toNumber(): number } }[],
+): number {
+  let cheapest = options[0]!;
+  for (const option of options) {
+    if (option.fee_reserve.toNumber() < cheapest.fee_reserve.toNumber()) {
+      cheapest = option;
+    }
+  }
+  return cheapest.fee_index;
+}
+
+async function rollbackSendOperation(manager: Manager, operationId: string): Promise<void> {
+  try {
+    await manager.ops.send.reclaim(operationId);
+  } catch {
+    try {
+      await manager.ops.send.cancel(operationId);
+    } catch {
+      // Rollback is best-effort; the operation stays visible in history either way.
+    }
+  }
+}
+
+export function sanitizeHistoryEntry(entry: unknown): unknown {
+  if (typeof entry !== "object" || entry === null) {
+    return entry;
+  }
+  const { token, proofs, ...rest } = entry as { token?: unknown; proofs?: unknown };
+  return rest;
 }

@@ -87,6 +87,54 @@ receiveCmd
     });
   });
 
+receiveCmd
+  .command("creq <amount>")
+  .description("Create a Cashu payment request (paid via Nostr)")
+  .option("--description <text>", "Description to embed in the request")
+  .option("--mint-url <url>", "Mint URL to use (defaults to the mint URL configured during init)")
+  .action(async (amount: string, options: { description?: string; mintUrl?: string }) => {
+    await handleDaemonCommand("/receive/creq", {
+      method: "POST",
+      body: {
+        amount: parseInt(amount),
+        description: options.description,
+        mintUrl: options.mintUrl,
+      },
+    });
+  });
+
+receiveCmd
+  .command("onchain")
+  .description("Get an onchain deposit address from the mint")
+  .option("--amount <amount>", "Amount in sats (wraps the address as a bitcoin: URI)")
+  .option("--mint-url <url>", "Mint URL to use (defaults to the mint URL configured during init)")
+  .action(async (options: { amount?: string; mintUrl?: string }) => {
+    await handleDaemonCommand("/receive/onchain", {
+      method: "POST",
+      body: {
+        amount: options.amount ? parseInt(options.amount) : undefined,
+        mintUrl: options.mintUrl,
+      },
+    });
+  });
+
+receiveCmd
+  .command("bolt12")
+  .description("Create a BOLT12 offer to receive tokens")
+  .option("--amount <amount>", "Fixed amount in sats to embed in the offer")
+  .option("--description <text>", "Description to embed in the offer")
+  .option("--mint-url <url>", "Mint URL to use (defaults to the mint URL configured during init)")
+  .action(async (options: { amount?: string; description?: string; mintUrl?: string }) => {
+    await handleDaemonCommand("/receive/bolt12", {
+      method: "POST",
+      body: {
+        amount: options.amount ? parseInt(options.amount) : undefined,
+        description: options.description,
+        mintUrl: options.mintUrl,
+      },
+    });
+  });
+
 // Send - nested subcommands
 const sendCmd = program.command("send").description("Send operations");
 
@@ -94,10 +142,11 @@ sendCmd
   .command("cashu <amount>")
   .description("Create Cashu token to send")
   .option("--mint-url <url>", "Mint URL to use (defaults to the mint URL configured during init)")
-  .action(async (amount: string, options: { mintUrl?: string }) => {
+  .option("--to <npub>", "Deliver the token to an npub via Nostr DM instead of printing it")
+  .action(async (amount: string, options: { mintUrl?: string; to?: string }) => {
     await handleDaemonCommand("/send/cashu", {
       method: "POST",
-      body: { amount: parseInt(amount), mintUrl: options.mintUrl },
+      body: { amount: parseInt(amount), mintUrl: options.mintUrl, to: options.to },
     });
   });
 
@@ -109,6 +158,61 @@ sendCmd
     await handleDaemonCommand("/send/bolt11", {
       method: "POST",
       body: { invoice, mintUrl: options.mintUrl },
+    });
+  });
+
+sendCmd
+  .command("creq <request>")
+  .description("Pay a Cashu payment request (creq...)")
+  .option("--amount <amount>", "Amount in sats (required when the request has no amount)")
+  .option("--mint-url <url>", "Mint URL to use (defaults to the mint URL configured during init)")
+  .action(async (request: string, options: { amount?: string; mintUrl?: string }) => {
+    await handleDaemonCommand("/send/creq", {
+      method: "POST",
+      body: {
+        request,
+        amount: options.amount ? parseInt(options.amount) : undefined,
+        mintUrl: options.mintUrl,
+      },
+    });
+  });
+
+sendCmd
+  .command("onchain <address> [amount]")
+  .description("Pay to an onchain Bitcoin address or bitcoin: URI")
+  .option("--fee-index <index>", "Fee option index (defaults to the cheapest)")
+  .option("--mint-url <url>", "Mint URL to use (defaults to the mint URL configured during init)")
+  .action(
+    async (
+      address: string,
+      amount: string | undefined,
+      options: { feeIndex?: string; mintUrl?: string },
+    ) => {
+      await handleDaemonCommand("/send/onchain", {
+        method: "POST",
+        body: {
+          address,
+          amount: amount ? parseInt(amount) : undefined,
+          feeIndex: options.feeIndex ? parseInt(options.feeIndex) : undefined,
+          mintUrl: options.mintUrl,
+        },
+      });
+    },
+  );
+
+sendCmd
+  .command("bolt12 <offer>")
+  .description("Pay a BOLT12 offer")
+  .option("--amount <amount>", "Amount in sats (required for amountless offers)")
+  .option("--mint-url <url>", "Mint URL to use (defaults to the mint URL configured during init)")
+  .action(async (offer: string, options: { amount?: string; mintUrl?: string }) => {
+    await handleDaemonCommand("/send/bolt12", {
+      method: "POST",
+      body: {
+        offer,
+        amount: options.amount ? parseInt(options.amount) : undefined,
+        mintUrl: options.mintUrl,
+      },
     });
   });
 
