@@ -8,7 +8,6 @@ function setUnlockedWithFakes(stateManager: DaemonStateManager): void {
   stateManager.setUnlocked(
     fakeManager,
     "https://mint.example.com",
-    new Uint8Array([1, 2, 3]),
     new Uint8Array([4, 5, 6]),
     fakeNpcAccount,
   );

@@ -1,7 +1,6 @@
 import { program } from "commander";
 
-const CONFIG_DIR = `${process.env.HOME || process.env.USERPROFILE}/.cocod`;
-const SOCKET_PATH = process.env.COCOD_SOCKET || `${CONFIG_DIR}/cocod.sock`;
+import { SOCKET_PATH } from "./utils/config.js";
 
 export interface CommandResponse {
   output?: unknown;

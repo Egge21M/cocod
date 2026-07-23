@@ -97,7 +97,9 @@ export function createNostrTransportPlugin(options: { secretKey: Uint8Array }): 
       const service = ctx.services.paymentRequestReceiveService;
       const logger = ctx.services.logger;
       const pubkey = getPublicKey(options.secretKey);
-      const activeOperationIds = new Set<string>();
+      // operation id -> createdAt (ms); the oldest anchors the subscription window so
+      // payments gift-wrapped while the daemon was down are still found on restart
+      const activeOperations = new Map<string, number>();
       const seenWrapIds = new Set<string>();
       let sub: { close: () => void } | null = null;
       let resubscribeTimer: ReturnType<typeof setInterval> | null = null;
@@ -127,12 +129,17 @@ export function createNostrTransportPlugin(options: { secretKey: Uint8Array }): 
 
       const subscribe = (): void => {
         sub?.close();
+        const nowSec = Math.floor(Date.now() / 1000);
+        const oldestCreatedAtSec = Math.min(
+          nowSec,
+          ...[...activeOperations.values()].map((ms) => Math.floor(ms / 1000)),
+        );
         sub = pool.subscribeMany(
           getRelays(),
           {
             kinds: [GIFT_WRAP_KIND],
             "#p": [pubkey],
-            since: Math.floor(Date.now() / 1000) - LOOKBACK_SECONDS,
+            since: oldestCreatedAtSec - LOOKBACK_SECONDS,
           },
           { onevent: (event) => void handleWrap(event) },
         );
@@ -157,16 +164,16 @@ export function createNostrTransportPlugin(options: { secretKey: Uint8Array }): 
           tags: [["n", "17"]],
         }),
         activate: (operation) => {
-          activeOperationIds.add(operation.id);
-          if (activeOperationIds.size === 1) {
+          activeOperations.set(operation.id, operation.createdAt);
+          if (activeOperations.size === 1) {
             subscribe();
             // relay sockets drop silently; periodic re-subscribe is the self-healing backstop
             resubscribeTimer = setInterval(subscribe, RESUBSCRIBE_INTERVAL_MS);
           }
         },
         deactivate: (operation) => {
-          activeOperationIds.delete(operation.id);
-          if (activeOperationIds.size === 0) teardown();
+          activeOperations.delete(operation.id);
+          if (activeOperations.size === 0) teardown();
         },
       });
 

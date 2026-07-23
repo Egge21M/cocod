@@ -95,7 +95,7 @@ cocod npc username myname --confirm
 Nostr DM to the wallet's own key. Payments are claimed while the daemon runs; the
 subscription re-activates automatically on daemon restart. `send creq` pays a request over
 whichever transport it advertises (inband prints the token, HTTP posts it, Nostr delivers a
-DM and rolls the send back if no relay accepts it).
+DM with a best-effort rollback if no relay accepts it).
 
 Relays default to a small public set; override with a comma-separated `COCOD_RELAYS`
 environment variable.

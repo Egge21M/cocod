@@ -4,7 +4,8 @@
   "transport": {
     "protocol": "http",
     "unixSocketEnv": "COCOD_SOCKET",
-    "defaultUnixSocket": "~/.cocod/cocod.sock"
+    "defaultUnixSocket": "~/.cocod/cocod.sock",
+    "notes": "COCOD_DIR relocates the whole state directory (config, database, socket, pid, log); COCOD_SOCKET overrides the socket path alone."
   },
   "responseContract": {
     "success": {
@@ -70,6 +71,7 @@
       "path": "/balance",
       "method": "GET",
       "state": "UNLOCKED",
+      "notes": "sats is the total balance (spendable + reserved), matching pre-v2 semantics; sat unit only.",
       "responses": {
         "200": "{ output: Record<string, { sats: number }> }",
         "403": "{ error: string }",
@@ -99,6 +101,7 @@
       },
       "responses": {
         "200": "{ output: string }",
+        "400": "{ error: string }",
         "500": "{ error: string }"
       }
     },
@@ -156,9 +159,10 @@
         "mintUrl": "string (optional)",
         "to": "string (optional)"
       },
-      "notes": "With to (npub/nprofile/hex pubkey), the token is delivered via NIP-17 gift-wrapped DM and the output is a confirmation string; delivery failure rolls the send back.",
+      "notes": "With to (npub/nprofile/hex pubkey), the token is delivered via NIP-17 gift-wrapped DM and the output is a confirmation string; delivery failure triggers a best-effort rollback.",
       "responses": {
         "200": "{ output: string }",
+        "400": "{ error: string }",
         "500": "{ error: string }"
       }
     },
@@ -220,6 +224,7 @@
       "notes": "NUT-25 bolt12 melt. For amountless offers the mint rejects the quote unless amount is provided.",
       "responses": {
         "200": "{ output: string }",
+        "400": "{ error: string }",
         "500": "{ error: string }"
       }
     },
@@ -259,6 +264,7 @@
       },
       "responses": {
         "200": "{ output: string }",
+        "400": "{ error: string }",
         "500": "{ error: string }"
       }
     },

@@ -4,20 +4,21 @@ import {
   cheapestFeeIndex,
   createRouteHandlers,
   formatBtcAmount,
+  isPositiveInt,
   parseOnchainTarget,
   pickPayableMint,
   sanitizeHistoryEntry,
 } from "./routes";
+import { decodeNostrTarget } from "./utils/nostr";
 import { DaemonStateManager } from "./utils/state";
 
-function unlockedStateManager(): DaemonStateManager {
+function unlockedStateManager(manager?: unknown): DaemonStateManager {
   const stateManager = new DaemonStateManager();
-  const fakeManager = {} as unknown as import("@cashu/coco-core").Manager;
+  const fakeManager = (manager ?? {}) as import("@cashu/coco-core").Manager;
   const fakeNpcAccount = {} as unknown as import("coco-cashu-plugin-npc").NPCAccountApi;
   stateManager.setUnlocked(
     fakeManager,
     "https://mint.example.com",
-    new Uint8Array([1, 2, 3]),
     new Uint8Array([4, 5, 6]),
     fakeNpcAccount,
   );
@@ -95,7 +96,7 @@ describe("routes", () => {
 
     const body = (await response.json()) as { error?: string };
     expect(response.status).toBe(400);
-    expect(body.error).toBe("Amount must be a positive number");
+    expect(body.error).toBe("Amount must be a positive integer");
   });
 
   test("/send/cashu rejects an invalid --to target before spending", async () => {
@@ -123,7 +124,7 @@ describe("routes", () => {
 
     const body = (await response.json()) as { error?: string };
     expect(response.status).toBe(400);
-    expect(body.error).toBe("Amount must be a positive number");
+    expect(body.error).toBe("Amount must be a positive integer");
   });
 
   test("/send/bolt12 rejects a non-positive amount option", async () => {
@@ -137,7 +138,7 @@ describe("routes", () => {
 
     const body = (await response.json()) as { error?: string };
     expect(response.status).toBe(400);
-    expect(body.error).toBe("Amount must be a positive number");
+    expect(body.error).toBe("Amount must be a positive integer");
   });
 
   test("/mints/add rejects an invalid URL", async () => {
@@ -207,7 +208,7 @@ describe("routes", () => {
 
     const body = (await response.json()) as { error?: string };
     expect(response.status).toBe(400);
-    expect(body.error).toBe("Amount must be a positive number");
+    expect(body.error).toBe("Amount must be a positive integer");
   });
 
   test("/send/bolt12 requires offer field", async () => {
@@ -238,6 +239,84 @@ describe("routes", () => {
     expect(body.error).toBe("URL is required");
   });
 
+  test("/receive/bolt11 rejects a non-integer amount", async () => {
+    const stateManager = unlockedStateManager();
+    const routes = createRouteHandlers(stateManager);
+
+    const response = await routes["/receive/bolt11"]!.POST!(
+      postJson("/receive/bolt11", { amount: null }),
+      stateManager.getState(),
+    );
+
+    const body = (await response.json()) as { error?: string };
+    expect(response.status).toBe(400);
+    expect(body.error).toBe("Amount must be a positive integer");
+  });
+
+  test("/receive/bolt12 rejects an invalid amount instead of dropping it", async () => {
+    const stateManager = unlockedStateManager();
+    const routes = createRouteHandlers(stateManager);
+
+    const response = await routes["/receive/bolt12"]!.POST!(
+      postJson("/receive/bolt12", { amount: null }),
+      stateManager.getState(),
+    );
+
+    const body = (await response.json()) as { error?: string };
+    expect(response.status).toBe(400);
+    expect(body.error).toBe("Amount must be a positive integer");
+  });
+
+  test("/send/creq rejects a P2PK-locked request", async () => {
+    const stubManager = {
+      paymentRequests: {
+        parse: async () => ({
+          unit: "sat",
+          amount: undefined,
+          payableMints: ["https://mint.example.com"],
+          transport: { type: "nostr", target: "npub1invalid" },
+          paymentRequest: { id: "abc", nut10: { kind: "P2PK", data: "02deadbeef" } },
+        }),
+      },
+    };
+    const stateManager = unlockedStateManager(stubManager);
+    const routes = createRouteHandlers(stateManager);
+
+    const response = await routes["/send/creq"]!.POST!(
+      postJson("/send/creq", { request: "creqA...", amount: 21 }),
+      stateManager.getState(),
+    );
+
+    const body = (await response.json()) as { error?: string };
+    expect(response.status).toBe(400);
+    expect(body.error).toBe("P2PK-locked payment requests are not supported yet");
+  });
+
+  test("/send/creq rejects a conflicting --amount", async () => {
+    const stubManager = {
+      paymentRequests: {
+        parse: async () => ({
+          unit: "sat",
+          amount: { toNumber: () => 100 },
+          payableMints: ["https://mint.example.com"],
+          transport: { type: "nostr", target: "npub1invalid" },
+          paymentRequest: { id: "abc" },
+        }),
+      },
+    };
+    const stateManager = unlockedStateManager(stubManager);
+    const routes = createRouteHandlers(stateManager);
+
+    const response = await routes["/send/creq"]!.POST!(
+      postJson("/send/creq", { request: "creqA...", amount: 50 }),
+      stateManager.getState(),
+    );
+
+    const body = (await response.json()) as { error?: string };
+    expect(response.status).toBe(400);
+    expect(body.error).toBe("Amount does not match the request amount (100 sats)");
+  });
+
   test("/receive/creq requires a positive amount", async () => {
     const stateManager = unlockedStateManager();
     const routes = createRouteHandlers(stateManager);
@@ -249,7 +328,7 @@ describe("routes", () => {
 
     const body = (await response.json()) as { error?: string };
     expect(response.status).toBe(400);
-    expect(body.error).toBe("Amount must be a positive number");
+    expect(body.error).toBe("Amount must be a positive integer");
   });
 });
 
@@ -260,19 +339,37 @@ describe("route helpers", () => {
     expect(formatBtcAmount(150000000)).toBe("1.5");
   });
 
-  test("pickPayableMint prefers explicit, then fallback, then first", () => {
+  test("pickPayableMint prefers the fallback, then the first payable mint", () => {
     const mints = ["https://a.example.com", "https://b.example.com"];
-    expect(pickPayableMint(mints, "https://b.example.com", "https://a.example.com")).toBe(
-      "https://b.example.com",
-    );
-    expect(pickPayableMint(mints, "https://c.example.com", "https://a.example.com")).toBeNull();
-    expect(pickPayableMint(mints, undefined, "https://b.example.com")).toBe(
-      "https://b.example.com",
-    );
-    expect(pickPayableMint(mints, undefined, "https://c.example.com")).toBe(
-      "https://a.example.com",
-    );
-    expect(pickPayableMint([], undefined, "https://a.example.com")).toBeNull();
+    expect(pickPayableMint(mints, "https://b.example.com")).toBe("https://b.example.com");
+    expect(pickPayableMint(mints, "https://c.example.com")).toBe("https://a.example.com");
+    expect(pickPayableMint([], "https://a.example.com")).toBeNull();
+  });
+
+  test("isPositiveInt accepts only positive integers", () => {
+    expect(isPositiveInt(21)).toBe(true);
+    expect(isPositiveInt(0)).toBe(false);
+    expect(isPositiveInt(-1)).toBe(false);
+    expect(isPositiveInt(10.5)).toBe(false);
+    expect(isPositiveInt(NaN)).toBe(false);
+    expect(isPositiveInt(null)).toBe(false);
+    expect(isPositiveInt("21")).toBe(false);
+  });
+
+  test("decodeNostrTarget accepts hex, npub, and nprofile targets", () => {
+    const hex = "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d";
+    expect(decodeNostrTarget(hex)).toEqual({ pubkey: hex, relays: [] });
+    expect(decodeNostrTarget(hex.toUpperCase()).pubkey).toBe(hex);
+    // npub encoding of the hex key above
+    const npub = "npub180cvv07tjdrrgpa0j7j7tmnyl2yr6yr7l8j4s3evf6u64th6gkwsyjh6w6";
+    expect(decodeNostrTarget(npub).pubkey).toBe(hex);
+    expect(() => decodeNostrTarget("garbage")).toThrow();
+  });
+
+  test("parseOnchainTarget rejects URIs with req- parameters", () => {
+    const address = "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4";
+    expect(parseOnchainTarget(`bitcoin:${address}?req-pop=xyz&amount=0.00000021`)).toBeNull();
+    expect(parseOnchainTarget(`bitcoin:${address}?REQ-POP=xyz`)).toBeNull();
   });
 
   test("parseOnchainTarget handles bare addresses and bitcoin: URIs", () => {

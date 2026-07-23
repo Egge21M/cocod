@@ -1,4 +1,3 @@
-import { mnemonicToSeedSync } from "@scure/bip39";
 import { CONFIG_FILE, SOCKET_PATH, PID_FILE } from "./utils/config.js";
 import { createDaemonLogger, serializeError } from "./utils/logger.js";
 import { DaemonStateManager } from "./utils/state.js";
@@ -73,11 +72,9 @@ export async function startDaemon() {
       } else {
         const { manager, nostrSk, npcAccount } = await initializeWallet(
           config,
-          undefined,
           logger.child({ component: "wallet" }),
         );
-        const seed = mnemonicToSeedSync(config.mnemonic);
-        stateManager.setUnlocked(manager, config.mintUrl, seed, nostrSk, npcAccount);
+        stateManager.setUnlocked(manager, config.mintUrl, nostrSk, npcAccount);
         logger.info("wallet.config_loaded", {
           encrypted: false,
           mintUrl: config.mintUrl,

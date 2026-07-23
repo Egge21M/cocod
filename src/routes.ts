@@ -5,11 +5,11 @@ import {
   type Logger,
   type Manager,
 } from "@cashu/coco-core";
-import { generateMnemonic, mnemonicToSeedSync, validateMnemonic } from "@scure/bip39";
+import { generateMnemonic, validateMnemonic } from "@scure/bip39";
 import { wordlist } from "@scure/bip39/wordlists/english.js";
 import { nip19 } from "nostr-tools";
 
-import { encryptMnemonic } from "./utils/crypto.js";
+import { decryptMnemonic, encryptMnemonic } from "./utils/crypto.js";
 import { CONFIG_FILE, SALT_FILE } from "./utils/config.js";
 import { serializeError } from "./utils/logger.js";
 import { decodeNostrTarget, sendPaymentDm } from "./utils/nostr.js";
@@ -55,7 +55,10 @@ export function createRouteHandlers(
             mnemonic = generateMnemonic(wordlist, 256);
           }
 
-          const mintUrl = normalizeMintUrl(body.mintUrl || "https://mint.minibits.cash/Bitcoin");
+          const mintUrl = tryNormalizeMintUrl(body.mintUrl || "https://mint.minibits.cash/Bitcoin");
+          if (!mintUrl) {
+            return Response.json({ error: "Invalid mint URL" }, { status: 400 });
+          }
           const encrypted = !!body.passphrase;
 
           await Bun.write(CONFIG_FILE, "");
@@ -86,13 +89,8 @@ export function createRouteHandlers(
               createdAt: new Date().toISOString(),
             };
 
-            const { manager, nostrSk, npcAccount } = await initializeWallet(
-              config,
-              undefined,
-              logger,
-            );
-            const seed = mnemonicToSeedSync(mnemonic);
-            stateManager.setUnlocked(manager, mintUrl, seed, nostrSk, npcAccount);
+            const { manager, nostrSk, npcAccount } = await initializeWallet(config, logger);
+            stateManager.setUnlocked(manager, mintUrl, nostrSk, npcAccount);
           }
 
           await Bun.write(CONFIG_FILE, JSON.stringify(config, null, 2));
@@ -118,7 +116,6 @@ export function createRouteHandlers(
           }
 
           const salt = await Bun.file(SALT_FILE).text();
-          const { decryptMnemonic } = await import("./utils/crypto.js");
           const mnemonic = await decryptMnemonic(state.encryptedMnemonic, body.passphrase, salt);
 
           const config: WalletConfig = {
@@ -129,14 +126,9 @@ export function createRouteHandlers(
             createdAt: new Date().toISOString(),
           };
 
-          const { manager, nostrSk, npcAccount } = await initializeWallet(
-            config,
-            undefined,
-            logger,
-          );
-          const seed = mnemonicToSeedSync(mnemonic);
+          const { manager, nostrSk, npcAccount } = await initializeWallet(config, logger);
 
-          stateManager.setUnlocked(manager, state.mintUrl, seed, nostrSk, npcAccount);
+          stateManager.setUnlocked(manager, state.mintUrl, nostrSk, npcAccount);
 
           return Response.json({ output: "Unlocked" });
         } catch (error) {
@@ -175,9 +167,12 @@ export function createRouteHandlers(
             if (res.success) {
               return Response.json({ output: res });
             } else {
-              return Response.json({
-                error: `Failed to set username. Required amount: ${res.pr.amount}. Required mints: ${res.pr.mints?.join(",")}`,
-              });
+              return Response.json(
+                {
+                  error: `Failed to set username. Required amount: ${res.pr.amount}. Required mints: ${res.pr.mints?.join(",")}`,
+                },
+                { status: 500 },
+              );
             }
           } else {
             const res = await state.npcAccount.setUsername(username);
@@ -191,7 +186,7 @@ export function createRouteHandlers(
                 { status: 402 },
               );
             } else {
-              return Response.json({ error: "Invalid response" });
+              return Response.json({ error: "Invalid response" }, { status: 500 });
             }
           }
         } catch (error) {
@@ -226,11 +221,9 @@ export function createRouteHandlers(
           const preparedOp = await state.manager.ops.receive.prepare({ token });
           await state.manager.ops.receive.execute(preparedOp);
           return Response.json({ output: `Received ${preparedOp.amount.toNumber()}` });
-        } catch (e) {
-          if (e instanceof Error) {
-            return Response.json({ error: e.message });
-          }
-          return Response.json({ error: "Receive failed" });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          return Response.json({ error: `Receive failed: ${message}` }, { status: 500 });
         }
       }),
     },
@@ -238,6 +231,9 @@ export function createRouteHandlers(
       POST: stateManager.requireUnlocked(async (req, state: UnlockedState) => {
         try {
           const body = (await req.json()) as { amount: number; mintUrl?: string };
+          if (!isPositiveInt(body.amount)) {
+            return Response.json({ error: "Amount must be a positive integer" }, { status: 400 });
+          }
           const mintUrl = body.mintUrl || state.mintUrl;
           const quote = await state.manager.quotes.mint.create({
             mintUrl,
@@ -260,8 +256,8 @@ export function createRouteHandlers(
             description?: string;
             mintUrl?: string;
           };
-          if (!body.amount || !Number.isFinite(body.amount) || body.amount <= 0) {
-            return Response.json({ error: "Amount must be a positive number" }, { status: 400 });
+          if (!isPositiveInt(body.amount)) {
+            return Response.json({ error: "Amount must be a positive integer" }, { status: 400 });
           }
           const mintUrl = body.mintUrl || state.mintUrl;
           const operation = await state.manager.paymentRequests.incoming.create({
@@ -286,11 +282,14 @@ export function createRouteHandlers(
       POST: stateManager.requireUnlocked(async (req, state: UnlockedState) => {
         try {
           const body = (await req.json()) as { amount?: number; mintUrl?: string };
+          if (body.amount !== undefined && !isPositiveInt(body.amount)) {
+            return Response.json({ error: "Amount must be a positive integer" }, { status: 400 });
+          }
           const mintUrl = body.mintUrl || state.mintUrl;
           const quote = await state.manager.quotes.mint.create({ mintUrl, method: "onchain" });
           const address = quote.request;
           const output =
-            body.amount && body.amount > 0
+            body.amount !== undefined
               ? `bitcoin:${address}?amount=${formatBtcAmount(body.amount)}`
               : address;
           return Response.json({ output });
@@ -311,11 +310,14 @@ export function createRouteHandlers(
             description?: string;
             mintUrl?: string;
           };
+          if (body.amount !== undefined && !isPositiveInt(body.amount)) {
+            return Response.json({ error: "Amount must be a positive integer" }, { status: 400 });
+          }
           const mintUrl = body.mintUrl || state.mintUrl;
           const quote = await state.manager.quotes.mint.create({
             mintUrl,
             method: "bolt12",
-            ...(body.amount && body.amount > 0 ? { amount: body.amount } : {}),
+            ...(body.amount !== undefined ? { amount: body.amount } : {}),
             ...(body.description ? { description: body.description } : {}),
           });
           return Response.json({ output: quote.request });
@@ -329,8 +331,8 @@ export function createRouteHandlers(
       POST: stateManager.requireUnlocked(async (req, state: UnlockedState) => {
         try {
           const body = (await req.json()) as { amount: number; mintUrl?: string; to?: string };
-          if (!body.amount || !Number.isFinite(body.amount) || body.amount <= 0) {
-            return Response.json({ error: "Amount must be a positive number" }, { status: 400 });
+          if (!isPositiveInt(body.amount)) {
+            return Response.json({ error: "Amount must be a positive integer" }, { status: 400 });
           }
           if (body.to) {
             try {
@@ -396,8 +398,8 @@ export function createRouteHandlers(
           if (!body.request) {
             return Response.json({ error: "Request is required" }, { status: 400 });
           }
-          if (body.amount !== undefined && (!Number.isFinite(body.amount) || body.amount <= 0)) {
-            return Response.json({ error: "Amount must be a positive number" }, { status: 400 });
+          if (body.amount !== undefined && !isPositiveInt(body.amount)) {
+            return Response.json({ error: "Amount must be a positive integer" }, { status: 400 });
           }
           const parsed = await state.manager.paymentRequests.parse(body.request);
           if (parsed.unit !== "sat") {
@@ -408,16 +410,53 @@ export function createRouteHandlers(
               { status: 400 },
             );
           }
-          const mintUrl = pickPayableMint(
-            parsed.payableMints,
-            body.mintUrl ? normalizeMintUrl(body.mintUrl) : undefined,
-            normalizeMintUrl(state.mintUrl),
-          );
-          if (!mintUrl) {
+          if (parsed.paymentRequest.nut10) {
+            // this coco release cannot construct P2PK-locked outputs; paying with
+            // unlocked proofs would silently ignore the receiver's requested lock
             return Response.json(
-              { error: "No trusted mint with sufficient balance satisfies this request" },
+              { error: "P2PK-locked payment requests are not supported yet" },
               { status: 400 },
             );
+          }
+          if (
+            body.amount !== undefined &&
+            parsed.amount &&
+            parsed.amount.toNumber() !== body.amount
+          ) {
+            return Response.json(
+              {
+                error: `Amount does not match the request amount (${parsed.amount.toNumber()} sats)`,
+              },
+              { status: 400 },
+            );
+          }
+          let mintUrl: string;
+          if (body.mintUrl) {
+            const requested = tryNormalizeMintUrl(body.mintUrl);
+            if (!requested) {
+              return Response.json({ error: "Invalid mint URL" }, { status: 400 });
+            }
+            if (!parsed.payableMints.includes(requested)) {
+              return Response.json(
+                {
+                  error: `Mint ${requested} does not satisfy request (request specifies different mints, or mint balance is insufficient).`,
+                },
+                { status: 400 },
+              );
+            }
+            mintUrl = requested;
+          } else {
+            const picked = pickPayableMint(
+              parsed.payableMints,
+              tryNormalizeMintUrl(state.mintUrl) ?? state.mintUrl,
+            );
+            if (!picked) {
+              return Response.json(
+                { error: "No trusted mint with sufficient balance satisfies this request" },
+                { status: 400 },
+              );
+            }
+            mintUrl = picked;
           }
           if (parsed.transport.type === "nostr") {
             // core's execute() throws for nostr transports; deliver the payload ourselves
@@ -497,8 +536,8 @@ export function createRouteHandlers(
             return Response.json({ error: "Invalid Bitcoin address" }, { status: 400 });
           }
           const amount = body.amount ?? target.amountSats;
-          if (!amount || !Number.isFinite(amount) || amount <= 0) {
-            return Response.json({ error: "Amount must be a positive number" }, { status: 400 });
+          if (!isPositiveInt(amount)) {
+            return Response.json({ error: "Amount must be a positive integer" }, { status: 400 });
           }
           const mintUrl = body.mintUrl || state.mintUrl;
           const quote = await state.manager.quotes.melt.create({
@@ -539,8 +578,8 @@ export function createRouteHandlers(
           if (!body.offer) {
             return Response.json({ error: "Offer is required" }, { status: 400 });
           }
-          if (body.amount !== undefined && (!Number.isFinite(body.amount) || body.amount <= 0)) {
-            return Response.json({ error: "Amount must be a positive number" }, { status: 400 });
+          if (body.amount !== undefined && !isPositiveInt(body.amount)) {
+            return Response.json({ error: "Amount must be a positive integer" }, { status: 400 });
           }
           const mintUrl = body.mintUrl || state.mintUrl;
           const quote = await state.manager.quotes.melt.create({
@@ -594,7 +633,10 @@ export function createRouteHandlers(
             return Response.json({ error: "Request is required" }, { status: 400 });
           }
 
-          const mintUrl = normalizeMintUrl(body.mintUrl || state.mintUrl);
+          const mintUrl = tryNormalizeMintUrl(body.mintUrl || state.mintUrl);
+          if (!mintUrl) {
+            return Response.json({ error: "Invalid mint URL" }, { status: 400 });
+          }
           const parsed = await state.manager.paymentRequests.parse(body.request);
           if (!parsed.payableMints.includes(mintUrl)) {
             return Response.json(
@@ -635,10 +677,8 @@ export function createRouteHandlers(
       POST: stateManager.requireUnlocked(async (req, state: UnlockedState) => {
         try {
           const body = (await req.json()) as { url: string };
-          let url: string;
-          try {
-            url = normalizeMintUrl(body.url);
-          } catch {
+          const url = tryNormalizeMintUrl(body.url);
+          if (!url) {
             return Response.json({ error: "Invalid mint URL" }, { status: 400 });
           }
           await state.manager.mint.addMint(url, { trusted: true });
@@ -669,10 +709,8 @@ export function createRouteHandlers(
           if (!body.url) {
             return Response.json({ error: "URL is required" }, { status: 400 });
           }
-          let url: string;
-          try {
-            url = normalizeMintUrl(body.url);
-          } catch {
+          const url = tryNormalizeMintUrl(body.url);
+          if (!url) {
             return Response.json({ error: "Invalid mint URL" }, { status: 400 });
           }
           await state.manager.mint.addMint(url, { trusted: true });
@@ -843,18 +881,23 @@ async function runRoute(
   }
 }
 
-export function pickPayableMint(
-  payableMints: string[],
-  requested: string | undefined,
-  fallback: string,
-): string | null {
-  if (requested) {
-    return payableMints.includes(requested) ? requested : null;
-  }
+export function pickPayableMint(payableMints: string[], fallback: string): string | null {
   if (payableMints.includes(fallback)) {
     return fallback;
   }
   return payableMints[0] ?? null;
+}
+
+export function isPositiveInt(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0;
+}
+
+function tryNormalizeMintUrl(url: string): string | null {
+  try {
+    return normalizeMintUrl(url);
+  } catch {
+    return null;
+  }
 }
 
 export function formatBtcAmount(sats: number): string {
@@ -876,6 +919,10 @@ export function parseOnchainTarget(input: string): { address: string; amountSats
       // matched case-insensitively and the amount value is BTC decimal
       for (const pair of queryPart.split("&")) {
         const [key, value] = pair.split("=", 2);
+        if (key && /^req-/i.test(key)) {
+          // BIP-321: unhandled req- parameters MUST invalidate the entire URI
+          return null;
+        }
         if (key?.toLowerCase() === "amount" && value) {
           const btc = Number.parseFloat(value);
           if (Number.isFinite(btc) && btc > 0) {
