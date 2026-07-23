@@ -92,7 +92,11 @@ export function createRouteHandlers(
               createdAt: new Date().toISOString(),
             };
 
-            const { manager, nostrSk, npcAccount } = await initializeWallet(config, logger);
+            const { manager, nostrSk, npcAccount } = await initializeWallet(
+              config,
+              undefined,
+              logger,
+            );
             stateManager.setUnlocked(manager, mintUrl, nostrSk, npcAccount);
           }
 
@@ -129,7 +133,11 @@ export function createRouteHandlers(
             createdAt: new Date().toISOString(),
           };
 
-          const { manager, nostrSk, npcAccount } = await initializeWallet(config, logger);
+          const { manager, nostrSk, npcAccount } = await initializeWallet(
+            config,
+            undefined,
+            logger,
+          );
 
           stateManager.setUnlocked(manager, state.mintUrl, nostrSk, npcAccount);
 

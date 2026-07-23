@@ -72,6 +72,7 @@ export async function startDaemon() {
       } else {
         const { manager, nostrSk, npcAccount } = await initializeWallet(
           config,
+          undefined,
           logger.child({ component: "wallet" }),
         );
         stateManager.setUnlocked(manager, config.mintUrl, nostrSk, npcAccount);

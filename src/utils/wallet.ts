@@ -5,7 +5,8 @@ import { mnemonicToSeedSync } from "@scure/bip39";
 import { NPCPlugin, type NPCAccountApi } from "coco-cashu-plugin-npc";
 import { privateKeyFromSeedWords } from "nostr-tools/nip06";
 import { finalizeEvent, type EventTemplate } from "nostr-tools";
-import { DB_FILE } from "./config.js";
+import { decryptMnemonic } from "./crypto.js";
+import { SALT_FILE, DB_FILE } from "./config.js";
 import { createNostrTransportPlugin } from "./nostr.js";
 import type { WalletConfig } from "./config.js";
 
@@ -17,9 +18,21 @@ export interface InitializedWallet {
 
 export async function initializeWallet(
   config: WalletConfig,
+  passphrase?: string,
   logger?: Logger,
 ): Promise<InitializedWallet> {
-  const mnemonic = config.mnemonic;
+  let mnemonic: string;
+
+  if (config.encrypted) {
+    if (!passphrase) {
+      throw new Error("Passphrase required for encrypted wallet");
+    }
+    const salt = await Bun.file(SALT_FILE).text();
+    mnemonic = await decryptMnemonic(config.mnemonic, passphrase, salt);
+  } else {
+    mnemonic = config.mnemonic;
+  }
+
   const seed = mnemonicToSeedSync(mnemonic);
 
   const repo = new SqliteRepositories({ database: new Database(DB_FILE) });
