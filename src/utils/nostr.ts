@@ -10,7 +10,7 @@ type RequestTransport = Awaited<
   ReturnType<NonNullable<TransportHandler["createRequestTransport"]>>
 >;
 
-export const DEFAULT_RELAYS = [
+const DEFAULT_RELAYS = [
   "wss://relay.damus.io",
   "wss://nos.lol",
   "wss://relay.nostr.band",
@@ -22,6 +22,7 @@ const PUBLISH_TIMEOUT_MS = 15_000;
 const RESUBSCRIBE_INTERVAL_MS = 60_000;
 // NIP-59 randomizes gift-wrap timestamps up to 2 days into the past
 const LOOKBACK_SECONDS = 2 * 24 * 60 * 60;
+const MAX_SEEN_WRAP_IDS = 10_000;
 
 const pool = new SimplePool();
 
@@ -35,7 +36,7 @@ function getRelays(): string[] {
   return relays.length > 0 ? relays : DEFAULT_RELAYS;
 }
 
-function decodeTarget(target: string): { pubkey: string; relays: string[] } {
+export function decodeNostrTarget(target: string): { pubkey: string; relays: string[] } {
   if (/^[0-9a-f]{64}$/i.test(target)) {
     return { pubkey: target.toLowerCase(), relays: [] };
   }
@@ -54,9 +55,19 @@ export async function sendPaymentDm(
   target: string,
   content: string,
 ): Promise<void> {
-  const { pubkey, relays } = decodeTarget(target);
+  const { pubkey, relays } = decodeNostrTarget(target);
   const wrap = wrapEvent(sk, { publicKey: pubkey }, content);
-  const publishes = pool.publish([...new Set([...relays, ...getRelays()])], wrap);
+  // SimplePool.publish FULFILLS with a "connection failure: ..." string when a relay is
+  // unreachable; treat that as a rejection or Promise.any would report success on the
+  // fastest-failing relay while no relay accepted the event.
+  const publishes = pool.publish([...new Set([...relays, ...getRelays()])], wrap).map((p) =>
+    p.then((reason) => {
+      if (typeof reason === "string" && reason.startsWith("connection failure")) {
+        throw new Error(reason);
+      }
+      return reason;
+    }),
+  );
   let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
     await Promise.race([
@@ -94,6 +105,12 @@ export function createNostrTransportPlugin(options: { secretKey: Uint8Array }): 
       const handleWrap = async (wrap: Event): Promise<void> => {
         if (seenWrapIds.has(wrap.id)) return;
         seenWrapIds.add(wrap.id);
+        if (seenWrapIds.size > MAX_SEEN_WRAP_IDS) {
+          // insertion-ordered Set: evict the oldest id; coco's transportMessageId
+          // idempotency keeps re-delivery of evicted wraps safe
+          const oldest = seenWrapIds.values().next().value;
+          if (oldest !== undefined) seenWrapIds.delete(oldest);
+        }
         try {
           const rumor = unwrapEvent(wrap, options.secretKey);
           const content = rumor.content;

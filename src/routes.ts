@@ -1,4 +1,10 @@
-import { getEncodedToken, type Logger, type Manager } from "@cashu/coco-core";
+import {
+  getEncodedToken,
+  normalizeMintUrl,
+  resolveOnchainMeltFeeOption,
+  type Logger,
+  type Manager,
+} from "@cashu/coco-core";
 import { generateMnemonic, mnemonicToSeedSync, validateMnemonic } from "@scure/bip39";
 import { wordlist } from "@scure/bip39/wordlists/english.js";
 import { nip19 } from "nostr-tools";
@@ -6,7 +12,7 @@ import { nip19 } from "nostr-tools";
 import { encryptMnemonic } from "./utils/crypto.js";
 import { CONFIG_FILE, SALT_FILE } from "./utils/config.js";
 import { serializeError } from "./utils/logger.js";
-import { sendPaymentDm } from "./utils/nostr.js";
+import { decodeNostrTarget, sendPaymentDm } from "./utils/nostr.js";
 import { initializeWallet } from "./utils/wallet.js";
 import type { WalletConfig } from "./utils/config.js";
 import type { AppLogger } from "./utils/logger.js";
@@ -49,7 +55,7 @@ export function createRouteHandlers(
             mnemonic = generateMnemonic(wordlist, 256);
           }
 
-          const mintUrl = body.mintUrl || "https://mint.minibits.cash/Bitcoin";
+          const mintUrl = normalizeMintUrl(body.mintUrl || "https://mint.minibits.cash/Bitcoin");
           const encrypted = !!body.passphrase;
 
           await Bun.write(CONFIG_FILE, "");
@@ -201,7 +207,9 @@ export function createRouteHandlers(
           const balances = await state.manager.wallet.balances.byMint();
           const augmentedBalance: Record<string, { [unit: string]: number }> = {};
           for (const [url, snapshot] of Object.entries(balances)) {
-            augmentedBalance[url] = { sats: snapshot.spendable.toNumber() };
+            // total (spendable + reserved) matches the v1 getBalances() semantics the
+            // output contract was pinned against
+            augmentedBalance[url] = { sats: snapshot.total.toNumber() };
           }
           return Response.json({ output: augmentedBalance });
         } catch (error) {
@@ -321,6 +329,19 @@ export function createRouteHandlers(
       POST: stateManager.requireUnlocked(async (req, state: UnlockedState) => {
         try {
           const body = (await req.json()) as { amount: number; mintUrl?: string; to?: string };
+          if (!body.amount || !Number.isFinite(body.amount) || body.amount <= 0) {
+            return Response.json({ error: "Amount must be a positive number" }, { status: 400 });
+          }
+          if (body.to) {
+            try {
+              decodeNostrTarget(body.to);
+            } catch {
+              return Response.json(
+                { error: "Invalid Nostr target (expected npub, nprofile, or hex pubkey)" },
+                { status: 400 },
+              );
+            }
+          }
           const mintUrl = body.mintUrl || state.mintUrl;
           const prepared = await state.manager.ops.send.prepare({ mintUrl, amount: body.amount });
           const result = await state.manager.ops.send.execute(prepared);
@@ -329,7 +350,7 @@ export function createRouteHandlers(
             try {
               await sendPaymentDm(state.nostrSk, body.to, token);
             } catch (error) {
-              await rollbackSendOperation(state.manager, result.operation.id);
+              await rollbackSendOperation(state.manager, result.operation.id, logger);
               const message = error instanceof Error ? error.message : String(error);
               return Response.json(
                 { error: `Failed to deliver token: ${message}` },
@@ -375,6 +396,9 @@ export function createRouteHandlers(
           if (!body.request) {
             return Response.json({ error: "Request is required" }, { status: 400 });
           }
+          if (body.amount !== undefined && (!Number.isFinite(body.amount) || body.amount <= 0)) {
+            return Response.json({ error: "Amount must be a positive number" }, { status: 400 });
+          }
           const parsed = await state.manager.paymentRequests.parse(body.request);
           if (parsed.unit !== "sat") {
             // fail before proofs move: a unit-mismatched payload is rejected receiver-side
@@ -384,7 +408,11 @@ export function createRouteHandlers(
               { status: 400 },
             );
           }
-          const mintUrl = pickPayableMint(parsed.payableMints, body.mintUrl, state.mintUrl);
+          const mintUrl = pickPayableMint(
+            parsed.payableMints,
+            body.mintUrl ? normalizeMintUrl(body.mintUrl) : undefined,
+            normalizeMintUrl(state.mintUrl),
+          );
           if (!mintUrl) {
             return Response.json(
               { error: "No trusted mint with sufficient balance satisfies this request" },
@@ -400,6 +428,14 @@ export function createRouteHandlers(
                 { status: 400 },
               );
             }
+            try {
+              decodeNostrTarget(parsed.transport.target);
+            } catch {
+              return Response.json(
+                { error: "Payment request has an invalid nostr transport target" },
+                { status: 400 },
+              );
+            }
             const prepared = await state.manager.ops.send.prepare({ mintUrl, amount });
             const result = await state.manager.ops.send.execute(prepared);
             const payload = JSON.stringify({
@@ -411,7 +447,7 @@ export function createRouteHandlers(
             try {
               await sendPaymentDm(state.nostrSk, parsed.transport.target, payload);
             } catch (error) {
-              await rollbackSendOperation(state.manager, result.operation.id);
+              await rollbackSendOperation(state.manager, result.operation.id, logger);
               const message = error instanceof Error ? error.message : String(error);
               return Response.json(
                 { error: `Failed to deliver payment: ${message}` },
@@ -427,6 +463,15 @@ export function createRouteHandlers(
           const res = await state.manager.paymentRequests.execute(prepared);
           if (res.type === "inband") {
             return Response.json({ output: getEncodedToken(res.token) });
+          }
+          // core POSTs the token but does not check the response; a rejected delivery
+          // must roll the send back instead of reporting success
+          if (!res.response.ok) {
+            await rollbackSendOperation(state.manager, res.operation.id, logger);
+            return Response.json(
+              { error: `Receiver rejected the payment: HTTP ${res.response.status}` },
+              { status: 500 },
+            );
           }
           return Response.json({ output: `Paid request: ${body.request}` });
         } catch (error) {
@@ -461,23 +506,21 @@ export function createRouteHandlers(
             method: "onchain",
             methodData: { address: target.address, amountSats: amount },
           });
-          const feeOptions = quote.fee_options;
-          if (!feeOptions || feeOptions.length === 0) {
-            return Response.json({ error: "Mint returned no fee options" }, { status: 500 });
+          const feeIndex = body.feeIndex ?? cheapestFeeIndex(quote.fee_options);
+          let resolvedFeeIndex: number;
+          try {
+            resolvedFeeIndex = resolveOnchainMeltFeeOption(quote, feeIndex).feeIndex;
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            return Response.json({ error: message }, { status: 400 });
           }
-          const feeIndex = body.feeIndex ?? cheapestFeeIndex(feeOptions);
-          const selected = feeOptions.find((option) => option.fee_index === feeIndex);
-          if (!selected) {
-            const available = feeOptions.map((option) => option.fee_index).join(", ");
-            return Response.json(
-              { error: `Invalid fee index ${feeIndex}. Available: ${available}` },
-              { status: 400 },
-            );
-          }
-          const prepared = await state.manager.ops.melt.prepare({ quote, feeIndex });
+          const prepared = await state.manager.ops.melt.prepare({
+            quote,
+            feeIndex: resolvedFeeIndex,
+          });
           await state.manager.ops.melt.execute(prepared);
           return Response.json({
-            output: `Sending ${amount} sats to ${target.address} (fee option ${feeIndex}, pending)`,
+            output: `Sending ${amount} sats to ${target.address} (fee option ${resolvedFeeIndex}, pending)`,
           });
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
@@ -495,6 +538,9 @@ export function createRouteHandlers(
           };
           if (!body.offer) {
             return Response.json({ error: "Offer is required" }, { status: 400 });
+          }
+          if (body.amount !== undefined && (!Number.isFinite(body.amount) || body.amount <= 0)) {
+            return Response.json({ error: "Amount must be a positive number" }, { status: 400 });
           }
           const mintUrl = body.mintUrl || state.mintUrl;
           const quote = await state.manager.quotes.melt.create({
@@ -548,7 +594,7 @@ export function createRouteHandlers(
             return Response.json({ error: "Request is required" }, { status: 400 });
           }
 
-          const mintUrl = body.mintUrl || state.mintUrl;
+          const mintUrl = normalizeMintUrl(body.mintUrl || state.mintUrl);
           const parsed = await state.manager.paymentRequests.parse(body.request);
           if (!parsed.payableMints.includes(mintUrl)) {
             return Response.json(
@@ -589,8 +635,14 @@ export function createRouteHandlers(
       POST: stateManager.requireUnlocked(async (req, state: UnlockedState) => {
         try {
           const body = (await req.json()) as { url: string };
-          await state.manager.mint.addMint(body.url, { trusted: true });
-          return Response.json({ output: `Added mint: ${body.url}` });
+          let url: string;
+          try {
+            url = normalizeMintUrl(body.url);
+          } catch {
+            return Response.json({ error: "Invalid mint URL" }, { status: 400 });
+          }
+          await state.manager.mint.addMint(url, { trusted: true });
+          return Response.json({ output: `Added mint: ${url}` });
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           return Response.json({ error: `Failed to add mint: ${message}` }, { status: 500 });
@@ -617,13 +669,19 @@ export function createRouteHandlers(
           if (!body.url) {
             return Response.json({ error: "URL is required" }, { status: 400 });
           }
-          await state.manager.mint.addMint(body.url, { trusted: true });
+          let url: string;
+          try {
+            url = normalizeMintUrl(body.url);
+          } catch {
+            return Response.json({ error: "Invalid mint URL" }, { status: 400 });
+          }
+          await state.manager.mint.addMint(url, { trusted: true });
           const configText = await Bun.file(CONFIG_FILE).text();
           const config = JSON.parse(configText) as WalletConfig;
-          config.mintUrl = body.url;
+          config.mintUrl = url;
           await Bun.write(CONFIG_FILE, JSON.stringify(config, null, 2));
-          stateManager.setDefaultMint(body.url);
-          return Response.json({ output: `Default mint set: ${body.url}` });
+          stateManager.setDefaultMint(url);
+          return Response.json({ output: `Default mint set: ${url}` });
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           return Response.json(
@@ -681,7 +739,9 @@ export function createRouteHandlers(
               const eventData = JSON.stringify({
                 type: "history:updated",
                 timestamp: new Date().toISOString(),
-                data: payload,
+                // pending sends carry a live spendable token on the entry — strip it,
+                // matching the /history route
+                data: { ...payload, entry: sanitizeHistoryEntry(payload.entry) },
               });
               const sseData = `data: ${eventData}\n\n`;
               controller.enqueue(new TextEncoder().encode(sseData));
@@ -824,41 +884,59 @@ export function parseOnchainTarget(input: string): { address: string; amountSats
         }
       }
     }
-    return { address, ...(amountSats !== undefined ? { amountSats } : {}) };
+    return {
+      address: canonicalBitcoinAddress(address),
+      ...(amountSats !== undefined ? { amountSats } : {}),
+    };
   }
   if (looksLikeBitcoinAddress(trimmed)) {
-    return { address: trimmed };
+    return { address: canonicalBitcoinAddress(trimmed) };
   }
   return null;
 }
 
 function looksLikeBitcoinAddress(value: string): boolean {
-  return (
-    /^(bc1|tb1|bcrt1)[a-z0-9]{8,100}$/i.test(value) ||
-    /^[13mn2][a-km-zA-HJ-NP-Z1-9]{25,39}$/.test(value)
-  );
+  if (/^(bc1|tb1|bcrt1)/i.test(value)) {
+    // BIP-173: bech32 must be all-lowercase or all-uppercase, never mixed
+    if (value !== value.toLowerCase() && value !== value.toUpperCase()) {
+      return false;
+    }
+    return /^(bc1|tb1|bcrt1)[02-9ac-hj-np-z]{8,100}$/.test(value.toLowerCase());
+  }
+  return /^[13mn2][a-km-zA-HJ-NP-Z1-9]{25,39}$/.test(value);
+}
+
+function canonicalBitcoinAddress(address: string): string {
+  // lowercase bech32 (some mints reject the uppercase QR form); legacy addresses are
+  // case-sensitive and pass through untouched
+  return /^(bc1|tb1|bcrt1)/i.test(address) ? address.toLowerCase() : address;
 }
 
 export function cheapestFeeIndex(
   options: { fee_index: number; fee_reserve: { toNumber(): number } }[],
-): number {
-  let cheapest = options[0]!;
+): number | undefined {
+  let cheapest: (typeof options)[number] | undefined;
   for (const option of options) {
-    if (option.fee_reserve.toNumber() < cheapest.fee_reserve.toNumber()) {
+    if (!cheapest || option.fee_reserve.toNumber() < cheapest.fee_reserve.toNumber()) {
       cheapest = option;
     }
   }
-  return cheapest.fee_index;
+  return cheapest?.fee_index;
 }
 
-async function rollbackSendOperation(manager: Manager, operationId: string): Promise<void> {
+async function rollbackSendOperation(
+  manager: Manager,
+  operationId: string,
+  logger?: Logger,
+): Promise<void> {
   try {
     await manager.ops.send.reclaim(operationId);
   } catch {
     try {
       await manager.ops.send.cancel(operationId);
-    } catch {
-      // Rollback is best-effort; the operation stays visible in history either way.
+    } catch (error) {
+      // Rollback is best-effort; log it so stuck proofs are traceable to an operation.
+      logger?.error("send.rollback_failed", { operationId, error: serializeError(error) });
     }
   }
 }

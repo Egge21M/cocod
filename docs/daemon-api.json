@@ -315,6 +315,7 @@
       "path": "/events",
       "method": "GET",
       "state": "UNLOCKED",
+      "notes": "Streams history:updated events. Entries are sanitized like /history (token/proofs stripped).",
       "responses": {
         "200": "text/event-stream"
       }

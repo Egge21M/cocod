@@ -114,6 +114,17 @@ export async function startDaemon() {
 
     server?.stop();
 
+    const state = stateManager.getState();
+    if (state.status === "UNLOCKED") {
+      // give watchers/processors/plugins a graceful stop, but never block shutdown on it
+      await Promise.race([
+        state.manager.dispose().catch((error) => {
+          logger.warn("daemon.dispose_failed", { error: serializeError(error) });
+        }),
+        new Promise((resolve) => setTimeout(resolve, 3000)),
+      ]);
+    }
+
     try {
       await Bun.file(PID_FILE).delete();
     } catch {

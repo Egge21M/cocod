@@ -142,7 +142,10 @@ sendCmd
   .command("cashu <amount>")
   .description("Create Cashu token to send")
   .option("--mint-url <url>", "Mint URL to use (defaults to the mint URL configured during init)")
-  .option("--to <npub>", "Deliver the token to an npub via Nostr DM instead of printing it")
+  .option(
+    "--to <target>",
+    "Deliver the token via Nostr DM (npub, nprofile, or hex pubkey) instead of printing it",
+  )
   .action(async (amount: string, options: { mintUrl?: string; to?: string }) => {
     await handleDaemonCommand("/send/cashu", {
       method: "POST",
