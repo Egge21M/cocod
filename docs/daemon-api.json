@@ -132,6 +132,7 @@
       "notes": "Returns a mint deposit address (NUT-30). With amount, output is a BIP-321 bitcoin: URI; the amount is display-only and whatever arrives is minted.",
       "responses": {
         "200": "{ output: string }",
+        "400": "{ error: string }",
         "500": "{ error: string }"
       }
     },
@@ -147,6 +148,7 @@
       "notes": "Returns a BOLT12 offer (lno1...) from a NUT-25 mint quote. Amountless offers are reusable.",
       "responses": {
         "200": "{ output: string }",
+        "400": "{ error: string }",
         "500": "{ error: string }"
       }
     },
@@ -264,7 +266,6 @@
       },
       "responses": {
         "200": "{ output: string }",
-        "400": "{ error: string }",
         "500": "{ error: string }"
       }
     },

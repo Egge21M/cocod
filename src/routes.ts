@@ -2,8 +2,11 @@ import {
   getEncodedToken,
   normalizeMintUrl,
   resolveOnchainMeltFeeOption,
+  type HistoryEntry,
   type Logger,
   type Manager,
+  type OnchainMeltQuote,
+  type SendTarget,
 } from "@cashu/coco-core";
 import { generateMnemonic, validateMnemonic } from "@scure/bip39";
 import { wordlist } from "@scure/bip39/wordlists/english.js";
@@ -476,7 +479,7 @@ export function createRouteHandlers(
                 { status: 400 },
               );
             }
-            let target: { type: "p2pk"; pubkey: string } | undefined;
+            let target: SendTarget | undefined;
             if (nut10) {
               if (nut10.kind !== "P2PK") {
                 return Response.json(
@@ -701,12 +704,8 @@ export function createRouteHandlers(
       POST: stateManager.requireUnlocked(async (req, state: UnlockedState) => {
         try {
           const body = (await req.json()) as { url: string };
-          const url = tryNormalizeMintUrl(body.url);
-          if (!url) {
-            return Response.json({ error: "Invalid mint URL" }, { status: 400 });
-          }
-          await state.manager.mint.addMint(url, { trusted: true });
-          return Response.json({ output: `Added mint: ${url}` });
+          await state.manager.mint.addMint(body.url, { trusted: true });
+          return Response.json({ output: `Added mint: ${body.url}` });
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           return Response.json({ error: `Failed to add mint: ${message}` }, { status: 500 });
@@ -983,10 +982,8 @@ function canonicalBitcoinAddress(address: string): string {
   return /^(bc1|tb1|bcrt1)/i.test(address) ? address.toLowerCase() : address;
 }
 
-export function cheapestFeeIndex(
-  options: { fee_index: number; fee_reserve: { toNumber(): number } }[],
-): number | undefined {
-  let cheapest: (typeof options)[number] | undefined;
+export function cheapestFeeIndex(options: OnchainMeltQuote["fee_options"]): number | undefined {
+  let cheapest: OnchainMeltQuote["fee_options"][number] | undefined;
   for (const option of options) {
     if (!cheapest || option.fee_reserve.toNumber() < cheapest.fee_reserve.toNumber()) {
       cheapest = option;
@@ -1001,21 +998,16 @@ async function rollbackSendOperation(
   logger?: Logger,
 ): Promise<void> {
   try {
+    // executed sends are `pending`; reclaim swaps the reserved proofs back
     await manager.ops.send.reclaim(operationId);
-  } catch {
-    try {
-      await manager.ops.send.cancel(operationId);
-    } catch (error) {
-      // Rollback is best-effort; log it so stuck proofs are traceable to an operation.
-      logger?.error("send.rollback_failed", { operationId, error: serializeError(error) });
-    }
+  } catch (error) {
+    // Rollback is best-effort; log it so stuck proofs are traceable to an operation.
+    logger?.error("send.rollback_failed", { operationId, error: serializeError(error) });
   }
 }
 
-export function sanitizeHistoryEntry(entry: unknown): unknown {
-  if (typeof entry !== "object" || entry === null) {
-    return entry;
-  }
-  const { token, proofs, ...rest } = entry as { token?: unknown; proofs?: unknown };
+export function sanitizeHistoryEntry<T extends HistoryEntry>(entry: T): Omit<T, "token"> {
+  // pending sends (and legacy send/receive rows) carry a live spendable token
+  const { token: _token, ...rest } = entry as T & { token?: unknown };
   return rest;
 }

@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { toAmount, type HistoryEntry } from "@cashu/coco-core";
+import { nip19 } from "nostr-tools";
 
 import {
   cheapestFeeIndex,
@@ -139,20 +141,6 @@ describe("routes", () => {
     const body = (await response.json()) as { error?: string };
     expect(response.status).toBe(400);
     expect(body.error).toBe("Amount must be a positive integer");
-  });
-
-  test("/mints/add rejects an invalid URL", async () => {
-    const stateManager = unlockedStateManager();
-    const routes = createRouteHandlers(stateManager);
-
-    const response = await routes["/mints/add"]!.POST!(
-      postJson("/mints/add", { url: "not a url" }),
-      stateManager.getState(),
-    );
-
-    const body = (await response.json()) as { error?: string };
-    expect(response.status).toBe(400);
-    expect(body.error).toBe("Invalid mint URL");
   });
 
   test("/send/creq requires request field", async () => {
@@ -351,6 +339,68 @@ describe("routes", () => {
     expect(body.error).toBe("P2PK requests with additional constraints (tags) are not supported");
   });
 
+  test("/send/creq rejects an explicit --mint-url the request cannot use", async () => {
+    const stubManager = {
+      paymentRequests: {
+        parse: async () => ({
+          unit: "sat",
+          amount: undefined,
+          payableMints: ["https://other.example.com"],
+          transport: {
+            type: "nostr",
+            target: "npub180cvv07tjdrrgpa0j7j7tmnyl2yr6yr7l8j4s3evf6u64th6gkwsyjh6w6",
+          },
+          paymentRequest: { id: "abc" },
+        }),
+      },
+    };
+    const stateManager = unlockedStateManager(stubManager);
+    const routes = createRouteHandlers(stateManager);
+
+    const response = await routes["/send/creq"]!.POST!(
+      postJson("/send/creq", {
+        request: "creqA...",
+        amount: 21,
+        mintUrl: "https://mint.example.com",
+      }),
+      stateManager.getState(),
+    );
+
+    const body = (await response.json()) as { error?: string };
+    expect(response.status).toBe(400);
+    expect(body.error).toBe(
+      "Mint https://mint.example.com does not satisfy request (request specifies different mints, or mint balance is insufficient).",
+    );
+  });
+
+  test("/send/creq requires --amount for an amountless nostr request", async () => {
+    const stubManager = {
+      paymentRequests: {
+        parse: async () => ({
+          unit: "sat",
+          amount: undefined,
+          payableMints: ["https://mint.example.com"],
+          transport: {
+            type: "nostr",
+            target: "npub180cvv07tjdrrgpa0j7j7tmnyl2yr6yr7l8j4s3evf6u64th6gkwsyjh6w6",
+          },
+          paymentRequest: { id: "abc" },
+        }),
+      },
+    };
+    const stateManager = unlockedStateManager(stubManager);
+    const routes = createRouteHandlers(stateManager);
+
+    const response = await routes["/send/creq"]!.POST!(
+      postJson("/send/creq", { request: "creqA..." }),
+      stateManager.getState(),
+    );
+
+    const body = (await response.json()) as { error?: string };
+    expect(response.status).toBe(400);
+    expect(body.error).toBe("Request has no amount. Use --amount to specify one");
+  });
+
   test("/send/creq rejects a conflicting --amount", async () => {
     const stubManager = {
       paymentRequests: {
@@ -425,6 +475,11 @@ describe("route helpers", () => {
     // npub encoding of the hex key above
     const npub = "npub180cvv07tjdrrgpa0j7j7tmnyl2yr6yr7l8j4s3evf6u64th6gkwsyjh6w6";
     expect(decodeNostrTarget(npub).pubkey).toBe(hex);
+    const nprofile = nip19.nprofileEncode({ pubkey: hex, relays: ["wss://relay.example.com"] });
+    expect(decodeNostrTarget(nprofile)).toEqual({
+      pubkey: hex,
+      relays: ["wss://relay.example.com"],
+    });
     expect(() => decodeNostrTarget("garbage")).toThrow();
   });
 
@@ -454,24 +509,25 @@ describe("route helpers", () => {
 
   test("cheapestFeeIndex picks the lowest fee reserve", () => {
     const options = [
-      { fee_index: 0, fee_reserve: { toNumber: () => 500 } },
-      { fee_index: 1, fee_reserve: { toNumber: () => 120 } },
-      { fee_index: 2, fee_reserve: { toNumber: () => 900 } },
+      { fee_index: 0, fee_reserve: toAmount(500), estimated_blocks: 1 },
+      { fee_index: 1, fee_reserve: toAmount(120), estimated_blocks: 12 },
+      { fee_index: 2, fee_reserve: toAmount(900), estimated_blocks: 0 },
     ];
     expect(cheapestFeeIndex(options)).toBe(1);
     expect(cheapestFeeIndex([])).toBeUndefined();
   });
 
-  test("sanitizeHistoryEntry strips token and proofs", () => {
+  test("sanitizeHistoryEntry strips the token", () => {
     const entry = {
       id: "send:1",
       type: "send",
       amount: "21",
       token: { mint: "https://mint.example.com", proofs: [{ secret: "s3cret" }] },
-      proofs: [{ secret: "s3cret" }],
-    };
-    expect(sanitizeHistoryEntry(entry)).toEqual({ id: "send:1", type: "send", amount: "21" });
-    expect(sanitizeHistoryEntry(null)).toBeNull();
-    expect(sanitizeHistoryEntry("plain")).toBe("plain");
+    } as unknown as HistoryEntry;
+    expect(sanitizeHistoryEntry(entry)).toEqual({
+      id: "send:1",
+      type: "send",
+      amount: "21",
+    } as unknown as HistoryEntry);
   });
 });
