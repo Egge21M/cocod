@@ -429,6 +429,31 @@ describe("routes", () => {
     expect(body.error).toBe("Amount does not match the request amount (100 sats)");
   });
 
+  test("/history strips tokens from entries at the route boundary", async () => {
+    const entryWithToken = {
+      id: "send:1",
+      type: "send",
+      amount: "21",
+      token: { mint: "https://mint.example.com", proofs: [{ secret: "s3cret" }] },
+    };
+    const stubManager = {
+      history: { getPaginatedHistory: async () => [entryWithToken] },
+    };
+    const stateManager = unlockedStateManager(stubManager);
+    const routes = createRouteHandlers(stateManager);
+
+    const response = await routes["/history"]!.GET!(
+      new Request("http://localhost/history"),
+      stateManager.getState(),
+    );
+
+    const body = (await response.json()) as { output: Record<string, unknown>[] };
+    expect(response.status).toBe(200);
+    expect(body.output).toHaveLength(1);
+    expect(body.output[0]).not.toHaveProperty("token");
+    expect(body.output[0]).toMatchObject({ id: "send:1", amount: "21" });
+  });
+
   test("/receive/creq requires a positive amount", async () => {
     const stateManager = unlockedStateManager();
     const routes = createRouteHandlers(stateManager);

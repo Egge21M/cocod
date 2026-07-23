@@ -89,7 +89,9 @@ export async function sendPaymentDm(
   }
 }
 
-export function createNostrTransportPlugin(options: { secretKey: Uint8Array }): Plugin {
+export function createNostrTransportPlugin(options: {
+  secretKey: Uint8Array;
+}): Plugin<["paymentRequestReceiveService", "logger"]> {
   return {
     name: "cocod-nostr-transport",
     required: ["paymentRequestReceiveService", "logger"],
@@ -101,7 +103,7 @@ export function createNostrTransportPlugin(options: { secretKey: Uint8Array }): 
       // payments gift-wrapped while the daemon was down are still found on restart
       const activeOperations = new Map<string, number>();
       const seenWrapIds = new Set<string>();
-      let sub: { close: () => void } | null = null;
+      let sub: ReturnType<SimplePool["subscribeMany"]> | null = null;
       let resubscribeTimer: ReturnType<typeof setInterval> | null = null;
 
       const handleWrap = async (wrap: Event): Promise<void> => {

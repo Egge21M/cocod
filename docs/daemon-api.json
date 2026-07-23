@@ -312,7 +312,7 @@
         "offset": "number (optional, default 0)",
         "limit": "number (optional, default 20, max 100)"
       },
-      "notes": "coco v2 history entries: amounts JSON-serialize as strings, rolled-back state is 'rolled_back', ids derive from operation ids (legacy rows keep 'legacy:' ids). token/proofs fields are stripped from the output so proof secrets never reach stdout.",
+      "notes": "coco v2 history entries: amounts JSON-serialize as strings, rolled-back state is 'rolled_back', ids derive from operation ids (legacy rows keep 'legacy:' ids). The token field is stripped from the output so proof secrets never reach stdout.",
       "responses": {
         "200": "{ output: unknown[] }",
         "400": "{ error: string }"
@@ -322,7 +322,7 @@
       "path": "/events",
       "method": "GET",
       "state": "UNLOCKED",
-      "notes": "Streams history:updated events. Entries are sanitized like /history (token/proofs stripped).",
+      "notes": "Streams history:updated events. Entries are sanitized like /history (token stripped).",
       "responses": {
         "200": "text/event-stream"
       }
