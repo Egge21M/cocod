@@ -70,6 +70,12 @@ export class DaemonStateManager {
     this.state = { status: "UNINITIALIZED" };
   }
 
+  setDefaultMint(mintUrl: string): void {
+    if (this.state.status === "UNLOCKED") {
+      this.state = { ...this.state, mintUrl };
+    }
+  }
+
   setError(message: string): void {
     this.state = { status: "ERROR", message };
   }

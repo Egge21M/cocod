@@ -610,6 +610,29 @@ export function createRouteHandlers(
         }
       }),
     },
+    "/mints/default": {
+      POST: stateManager.requireUnlocked(async (req, state: UnlockedState) => {
+        try {
+          const body = (await req.json()) as { url?: string };
+          if (!body.url) {
+            return Response.json({ error: "URL is required" }, { status: 400 });
+          }
+          await state.manager.mint.addMint(body.url, { trusted: true });
+          const configText = await Bun.file(CONFIG_FILE).text();
+          const config = JSON.parse(configText) as WalletConfig;
+          config.mintUrl = body.url;
+          await Bun.write(CONFIG_FILE, JSON.stringify(config, null, 2));
+          stateManager.setDefaultMint(body.url);
+          return Response.json({ output: `Default mint set: ${body.url}` });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          return Response.json(
+            { error: `Failed to set default mint: ${message}` },
+            { status: 500 },
+          );
+        }
+      }),
+    },
     "/mints/info": {
       POST: stateManager.requireUnlocked(async (req, state: UnlockedState) => {
         try {

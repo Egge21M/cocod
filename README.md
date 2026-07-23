@@ -65,6 +65,7 @@ cocod send bolt12 "lno1..." --amount 1000
 
 # Mints
 cocod mints add https://mint.example.com/Bitcoin
+cocod mints default https://mint.example.com/Bitcoin
 cocod mints list
 
 # History

@@ -292,6 +292,16 @@ mintsCmd
   });
 
 mintsCmd
+  .command("default <url>")
+  .description("Set the default mint URL (trusts the mint and persists across restarts)")
+  .action(async (url: string) => {
+    await handleDaemonCommand("/mints/default", {
+      method: "POST",
+      body: { url },
+    });
+  });
+
+mintsCmd
   .command("list")
   .description("List configured mints")
   .action(async () => {

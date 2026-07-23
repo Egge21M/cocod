@@ -163,6 +163,9 @@ Typical flow:
 # Add a mint URL
 cocod mints add <url>
 
+# Set the default mint (used by commands without --mint-url; persists across restarts)
+cocod mints default <url>
+
 # List configured mints
 cocod mints list
 

@@ -153,6 +153,20 @@ describe("routes", () => {
     expect(body.error).toBe("Offer is required");
   });
 
+  test("/mints/default requires url field", async () => {
+    const stateManager = unlockedStateManager();
+    const routes = createRouteHandlers(stateManager);
+
+    const response = await routes["/mints/default"]!.POST!(
+      postJson("/mints/default", {}),
+      stateManager.getState(),
+    );
+
+    const body = (await response.json()) as { error?: string };
+    expect(response.status).toBe(400);
+    expect(body.error).toBe("URL is required");
+  });
+
   test("/receive/creq requires a positive amount", async () => {
     const stateManager = unlockedStateManager();
     const routes = createRouteHandlers(stateManager);

@@ -62,6 +62,8 @@ All commands are available under `cocod`.
 ### Mints
 
 - `mints add <url>` - Add mint URL
+- `mints default <url>` - Set the default mint (trusts it, persists across restarts, takes
+  effect immediately; commands without `--mint-url` use it)
 - `mints list` - List configured mints
 - `mints info <url>` - Fetch mint metadata
 
@@ -114,6 +116,7 @@ The CLI talks to the daemon over HTTP on a UNIX socket.
 - `POST /x-cashu/parse`
 - `POST /x-cashu/handle`
 - `POST /mints/add`
+- `POST /mints/default`
 - `GET /mints/list`
 - `POST /mints/info`
 - `GET /history`

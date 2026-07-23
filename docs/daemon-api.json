@@ -272,6 +272,20 @@
       }
     },
     {
+      "path": "/mints/default",
+      "method": "POST",
+      "state": "UNLOCKED",
+      "body": {
+        "url": "string"
+      },
+      "notes": "Trusts the mint, persists it as the default in config.json, and updates the running daemon immediately.",
+      "responses": {
+        "200": "{ output: string }",
+        "400": "{ error: string }",
+        "500": "{ error: string }"
+      }
+    },
+    {
       "path": "/mints/info",
       "method": "POST",
       "state": "UNLOCKED",
