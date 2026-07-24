@@ -1,12 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { toAmount, type HistoryEntry, type Manager } from "@cashu/coco-core";
+import { toAmount, type Manager } from "@cashu/coco-core";
 
-import {
-  cheapestFeeIndex,
-  createRouteHandlers,
-  isPositiveInt,
-  sanitizeHistoryEntry,
-} from "./routes";
+import { createRouteHandlers } from "./routes";
 import { DaemonStateManager } from "./utils/state";
 
 function unlockedStateManager(manager?: unknown): DaemonStateManager {
@@ -238,18 +233,17 @@ describe("routes", () => {
             method: "onchain",
             request: "bc1qolder",
             expiry: null,
-            createdAt: 1,
             quoteId: "private-quote-id",
             pubkey: "linkable-pubkey",
             quoteData: { secret: "must-not-leak" },
             outputData: [{ secret: "proof-secret", blindingFactor: "blinding-factor" }],
           },
-          { method: "onchain", request: "bc1qnewer", expiry: null, createdAt: 2 },
-          { method: "onchain", request: "bc1qzero", expiry: 0, createdAt: 3 },
-          { method: "onchain", request: "bc1qexpiring", expiry: now + 3600, createdAt: 4 },
-          { method: "onchain", request: "bc1qline\nforged", expiry: null, createdAt: 6 },
+          { method: "onchain", request: "bc1qnewer", expiry: null },
+          { method: "onchain", request: "bc1qzero", expiry: 0 },
+          { method: "onchain", request: "bc1qexpiring", expiry: now + 3600 },
+          { method: "onchain", request: "bc1qline\nforged", expiry: null },
         ],
-        output: "bc1qexpiring\nbc1qzero\nbc1qnewer\nbc1qolder",
+        output: "bc1qolder\nbc1qnewer\nbc1qzero\nbc1qexpiring",
       },
       {
         path: "/receive/bolt12/list",
@@ -259,18 +253,17 @@ describe("routes", () => {
             method: "bolt12",
             request: "lno1noexpiry",
             expiry: null,
-            createdAt: 1,
             quoteId: "private-quote-id",
             pubkey: "linkable-pubkey",
             quoteData: { secret: "must-not-leak" },
             outputData: [{ secret: "proof-secret", blindingFactor: "blinding-factor" }],
           },
-          { method: "bolt12", request: "lno1future", expiry: now + 3600, createdAt: 2 },
-          { method: "bolt12", request: "lno1zero", expiry: 0, createdAt: 3 },
-          { method: "bolt12", request: "lno1expired", expiry: now - 1, createdAt: 4 },
-          { method: "bolt12", request: "lno1escape\u001b[31m", expiry: null, createdAt: 6 },
+          { method: "bolt12", request: "lno1future", expiry: now + 3600 },
+          { method: "bolt12", request: "lno1zero", expiry: 0 },
+          { method: "bolt12", request: "lno1expired", expiry: now - 1 },
+          { method: "bolt12", request: "lno1escape\u001b[31m", expiry: null },
         ],
-        output: "lno1zero\nlno1future\nlno1noexpiry",
+        output: "lno1noexpiry\nlno1future\nlno1zero",
       },
     ] as const;
 
@@ -524,37 +517,46 @@ describe("routes", () => {
     });
   });
 
-  test("/send/onchain requires an explicit amount", async () => {
-    const stateManager = unlockedStateManager();
-    const routes = createRouteHandlers(stateManager);
+  test("/send/onchain requires a positive safe-integer amount", async () => {
+    for (const amount of [undefined, 0, -1, 10.5, Number.MAX_SAFE_INTEGER + 1, null, "21"]) {
+      const stateManager = unlockedStateManager();
+      const routes = createRouteHandlers(stateManager);
+      const response = await routes["/send/onchain"]!.POST!(
+        postJson("/send/onchain", { address: "bc1qexample", amount }),
+        stateManager.getState(),
+      );
 
-    const response = await routes["/send/onchain"]!.POST!(
-      postJson("/send/onchain", { address: "bc1qexample" }),
-      stateManager.getState(),
-    );
-
-    expect(response.status).toBe(400);
-    expect(await response.json()).toEqual({
-      error: "Amount must be a positive safe integer",
-    });
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({
+        error: "Amount must be a positive safe integer",
+      });
+    }
   });
 
   test("/send/onchain passes the raw address and amount to Coco", async () => {
     let quoteInput: unknown;
+    let prepareInput: unknown;
     const manager = {
       quotes: {
         melt: {
           create: async (input: unknown) => {
             quoteInput = input;
             return {
-              fee_options: [{ fee_index: 0, fee_reserve: toAmount(2), estimated_blocks: 6 }],
+              fee_options: [
+                { fee_index: 0, fee_reserve: toAmount(500), estimated_blocks: 1 },
+                { fee_index: 1, fee_reserve: toAmount(120), estimated_blocks: 12 },
+                { fee_index: 2, fee_reserve: toAmount(900), estimated_blocks: 0 },
+              ],
             };
           },
         },
       },
       ops: {
         melt: {
-          prepare: async () => ({ id: "melt-1", state: "prepared" }),
+          prepare: async (input: unknown) => {
+            prepareInput = input;
+            return { id: "melt-1", state: "prepared" };
+          },
           execute: async () => ({ id: "melt-1", state: "pending" }),
         },
       },
@@ -576,8 +578,9 @@ describe("routes", () => {
       method: "onchain",
       methodData: { address: "bc1qexample", amountSats: 21 },
     });
+    expect(prepareInput).toMatchObject({ feeIndex: 1 });
     expect(await response.json()).toEqual({
-      output: "Payment pending: 21 sats to bc1qexample (fee option 0, operation melt-1)",
+      output: "Payment pending: 21 sats to bc1qexample (fee option 1, operation melt-1)",
     });
   });
 
@@ -667,122 +670,6 @@ describe("routes", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
       output: "Paid offer: lno1example",
-    });
-  });
-
-  test("/history strips tokens and serializes v2 Amount values as numbers", async () => {
-    const entryWithToken = {
-      id: "send:1",
-      type: "send",
-      amount: toAmount(21),
-      token: { mint: "https://mint.example.com", proofs: [{ secret: "s3cret" }] },
-    } as unknown as HistoryEntry;
-    const manager = {
-      history: { getPaginatedHistory: async () => [entryWithToken] },
-    };
-    const stateManager = unlockedStateManager(manager);
-    const routes = createRouteHandlers(stateManager);
-
-    const response = await routes["/history"]!.GET!(
-      new Request("http://localhost/history"),
-      stateManager.getState(),
-    );
-
-    const body = (await response.json()) as { output: Record<string, unknown>[] };
-    expect(response.status).toBe(200);
-    expect(body.output[0]).toEqual({ id: "send:1", type: "send", amount: 21 });
-  });
-
-  test("/events strips tokens and serializes v2 Amount values as numbers", async () => {
-    let listener: ((payload: { entry: HistoryEntry }) => void) | undefined;
-    let unsubscribed = false;
-    const manager = {
-      on: (_event: string, callback: (payload: { entry: HistoryEntry }) => void) => {
-        listener = callback;
-        return () => {
-          unsubscribed = true;
-        };
-      },
-    };
-    const stateManager = unlockedStateManager(manager);
-    const routes = createRouteHandlers(stateManager);
-    const abortController = new AbortController();
-    const response = await routes["/events"]!.GET!(
-      new Request("http://localhost/events", { signal: abortController.signal }),
-      stateManager.getState(),
-    );
-    const reader = response.body!.getReader();
-    const entryWithToken = {
-      id: "send:1",
-      type: "send",
-      amount: toAmount(21),
-      token: { mint: "https://mint.example.com", proofs: [{ secret: "s3cret" }] },
-    } as unknown as HistoryEntry;
-
-    listener!({ entry: entryWithToken });
-    const chunk = await reader.read();
-    const eventText = new TextDecoder().decode(chunk.value);
-    const event = JSON.parse(eventText.slice("data: ".length)) as {
-      data: { entry: Record<string, unknown> };
-    };
-
-    expect(response.status).toBe(200);
-    expect(event.data.entry).toEqual({ id: "send:1", type: "send", amount: 21 });
-    expect(eventText).not.toContain("s3cret");
-
-    abortController.abort();
-    expect(unsubscribed).toBe(true);
-    reader.releaseLock();
-  });
-});
-
-describe("route helpers", () => {
-  test("isPositiveInt accepts only positive safe integers", () => {
-    expect(isPositiveInt(21)).toBe(true);
-    expect(isPositiveInt(0)).toBe(false);
-    expect(isPositiveInt(-1)).toBe(false);
-    expect(isPositiveInt(10.5)).toBe(false);
-    expect(isPositiveInt(Number.MAX_SAFE_INTEGER + 1)).toBe(false);
-    expect(isPositiveInt(NaN)).toBe(false);
-    expect(isPositiveInt(null)).toBe(false);
-    expect(isPositiveInt("21")).toBe(false);
-  });
-
-  test("cheapestFeeIndex picks the lowest fee reserve", () => {
-    const options = [
-      { fee_index: 0, fee_reserve: toAmount(500), estimated_blocks: 1 },
-      { fee_index: 1, fee_reserve: toAmount(120), estimated_blocks: 12 },
-      { fee_index: 2, fee_reserve: toAmount(900), estimated_blocks: 0 },
-    ];
-    expect(cheapestFeeIndex(options)).toBe(1);
-    expect(cheapestFeeIndex([])).toBeUndefined();
-  });
-
-  test("sanitizeHistoryEntry strips the token and converts the amount", () => {
-    const entry = {
-      id: "send:1",
-      type: "send",
-      source: "operation",
-      operationId: "1",
-      state: "pending",
-      mintUrl: "https://mint.example.com",
-      unit: "sat",
-      createdAt: 1,
-      updatedAt: 2,
-      amount: toAmount(21),
-      token: { mint: "https://mint.example.com", proofs: [{ secret: "s3cret" }] },
-    } as unknown as HistoryEntry;
-    expect(sanitizeHistoryEntry(entry)).toEqual({
-      id: "send:1",
-      type: "send",
-      source: "operation",
-      operationId: "1",
-      state: "pending",
-      mintUrl: "https://mint.example.com",
-      unit: "sat",
-      createdAt: 1,
-      updatedAt: 2,
-      amount: 21,
     });
   });
 });

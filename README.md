@@ -157,6 +157,9 @@ bun run lint
 
 # Tests
 bun test
+
+# Isolated daemon smoke test
+bun run smoke:daemon
 ```
 
 ## Docs

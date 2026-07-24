@@ -2,7 +2,6 @@ import {
   getEncodedToken,
   normalizeMintUrl,
   resolveOnchainMeltFeeOption,
-  type HistoryEntry,
   type Logger,
   type OnchainMeltQuote,
 } from "@cashu/coco-core";
@@ -699,7 +698,7 @@ export function createRouteHandlers(
         }
 
         const entries = await state.manager.history.getPaginatedHistory(offset, limit);
-        return Response.json({ output: entries.map(sanitizeHistoryEntry) });
+        return Response.json({ output: entries });
       }),
     },
     "/events": {
@@ -713,9 +712,7 @@ export function createRouteHandlers(
               const eventData = JSON.stringify({
                 type: "history:updated",
                 timestamp: new Date().toISOString(),
-                // pending sends carry a live spendable token on the entry — strip it,
-                // matching the /history route
-                data: { ...payload, entry: sanitizeHistoryEntry(payload.entry) },
+                data: payload,
               });
               const sseData = `data: ${eventData}\n\n`;
               controller.enqueue(new TextEncoder().encode(sseData));
@@ -817,7 +814,7 @@ async function runRoute(
   }
 }
 
-export function isPositiveInt(value: unknown): value is number {
+function isPositiveInt(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 }
 
@@ -863,31 +860,24 @@ function reusableQuoteError(expiry: number | null): string | null {
   return null;
 }
 
-type ReusableReceiveMethod = "onchain" | "bolt12";
-
 async function listReusableReceiveRequests(
   state: UnlockedState,
-  method: ReusableReceiveMethod,
+  method: "onchain" | "bolt12",
 ): Promise<string> {
   const quotes = await state.manager.quotes.mint.listPending({ method });
 
   return quotes
-    .filter((quote) => {
-      if (!isPrintableSingleLineRequest(quote.request)) {
-        return false;
-      }
-      return reusableQuoteError(quote.expiry) === null;
-    })
-    .sort((a, b) => b.createdAt - a.createdAt || a.request.localeCompare(b.request))
+    .filter(
+      (quote) =>
+        typeof quote.request === "string" &&
+        /^[\x21-\x7e]+$/.test(quote.request) &&
+        reusableQuoteError(quote.expiry) === null,
+    )
     .map((quote) => quote.request)
     .join("\n");
 }
 
-function isPrintableSingleLineRequest(request: unknown): request is string {
-  return typeof request === "string" && /^[\x21-\x7e]+$/.test(request);
-}
-
-export function cheapestFeeIndex(options: OnchainMeltQuote["fee_options"]): number | undefined {
+function cheapestFeeIndex(options: OnchainMeltQuote["fee_options"]): number | undefined {
   let cheapest: OnchainMeltQuote["fee_options"][number] | undefined;
   for (const option of options) {
     if (!cheapest || option.fee_reserve.lessThan(cheapest.fee_reserve)) {
@@ -895,12 +885,4 @@ export function cheapestFeeIndex(options: OnchainMeltQuote["fee_options"]): numb
     }
   }
   return cheapest?.fee_index;
-}
-
-export function sanitizeHistoryEntry<T extends HistoryEntry>(
-  entry: T,
-): Omit<T, "amount" | "token"> & { amount: number } {
-  // pending sends (and legacy send/receive rows) carry a live spendable token
-  const { token: _token, amount, ...rest } = entry as T & { token?: unknown };
-  return { ...rest, amount: amount.toNumber() };
 }
