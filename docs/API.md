@@ -39,10 +39,9 @@ All commands are available under `cocod`.
   - `--mint-url <url>` override default mint
 - `receive bolt12 list` - List saved offers that meet cocod's current expiry policy
 
-`receive onchain` exposes only non-expiring quotes (`expiry: null` or `expiry: 0`); its string
-result cannot safely communicate a payment deadline. Both values are treated as non-expiring,
-matching Coco's corrected expiry semantics. The list commands use Coco's persisted reusable
-quotes without refreshing them and omit rejected or expired requests.
+`receive onchain` trusts Coco to monitor reusable quotes through their advertised expiry.
+The list commands use Coco's persisted reusable quotes without refreshing them and omit
+rejected or already-expired requests.
 
 ### Send
 
@@ -79,8 +78,9 @@ quotes without refreshing them and omit rejected or expired requests.
 - `x-cashu parse <request>` - Parse an encoded payment request
 - `x-cashu handle <request>` - Settle request and return `X-Cashu: cashuB...` header value
 
-The pinned v2 dependencies safely handle only `creqA` requests without NUT-10 locks.
-Both commands reject `creqB` and locked requests before any proofs are prepared.
+Cocod accepts `creqA` requests without NUT-10 locks. It disables `creqB` because the pinned
+Cashu decoder can discard NUT-10 spending conditions, and it rejects decoded locks because
+Coco 2.0.0-rc.2's payment-request API does not enforce them.
 
 ### Daemon control
 

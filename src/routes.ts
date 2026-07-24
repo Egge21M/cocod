@@ -25,9 +25,9 @@ import type {
 } from "./utils/state.js";
 
 const UNSUPPORTED_CREQB_ERROR =
-  "creqB payment requests are not supported by the pinned Cashu dependency";
+  "creqB requests are disabled because the pinned Cashu decoder drops NUT-10 spending conditions";
 const UNSUPPORTED_NUT10_ERROR =
-  "NUT-10-locked payment requests are not supported by the pinned Coco core";
+  "NUT-10-locked requests cannot be safely prepared by Coco 2.0.0-rc.2's payment-request API";
 
 export function createRouteHandlers(
   stateManager: DaemonStateManager,
@@ -175,12 +175,9 @@ export function createRouteHandlers(
             if (res.success) {
               return Response.json({ output: res });
             } else {
-              return Response.json(
-                {
-                  error: `Failed to set username. Required amount: ${res.pr.amount}. Required mints: ${res.pr.mints?.join(",")}`,
-                },
-                { status: 500 },
-              );
+              return Response.json({
+                error: `Failed to set username. Required amount: ${res.pr.amount}. Required mints: ${res.pr.mints?.join(",")}`,
+              });
             }
           } else {
             const res = await state.npcAccount.setUsername(username);
@@ -194,7 +191,7 @@ export function createRouteHandlers(
                 { status: 402 },
               );
             } else {
-              return Response.json({ error: "Invalid response" }, { status: 500 });
+              return Response.json({ error: "Invalid response" });
             }
           }
         } catch (error) {
@@ -230,8 +227,10 @@ export function createRouteHandlers(
           await state.manager.ops.receive.execute(preparedOp);
           return Response.json({ output: `Received ${preparedOp.amount.toNumber()}` });
         } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          return Response.json({ error: `Receive failed: ${message}` }, { status: 500 });
+          if (error instanceof Error) {
+            return Response.json({ error: error.message });
+          }
+          return Response.json({ error: "Receive failed" });
         }
       }),
     },
@@ -239,9 +238,6 @@ export function createRouteHandlers(
       POST: stateManager.requireUnlocked(async (req, state: UnlockedState) => {
         try {
           const body = (await req.json()) as { amount: number; mintUrl?: string };
-          if (!isPositiveInt(body.amount)) {
-            return Response.json({ error: "Amount must be a positive integer" }, { status: 400 });
-          }
           const mintUrl = body.mintUrl || state.mintUrl;
           const quote = await state.manager.quotes.mint.create({
             mintUrl,
@@ -273,19 +269,13 @@ export function createRouteHandlers(
           if (!mintUrl) {
             return Response.json({ error: "Invalid mint URL" }, { status: 400 });
           }
-          const capability = await state.manager.mint.checkPaymentMethodCapability({
-            mintUrl,
-            operation: "mint",
-            method: "onchain",
-            unit: "sat",
-          });
-          if (!capability.supported) {
-            return Response.json(
-              { error: capability.reason || "Mint does not support onchain deposits in sats" },
-              { status: 400 },
-            );
-          }
           if (body.amount !== undefined) {
+            const capability = await state.manager.mint.checkPaymentMethodCapability({
+              mintUrl,
+              operation: "mint",
+              method: "onchain",
+              unit: "sat",
+            });
             if (capability.minAmount?.greaterThan(body.amount)) {
               return Response.json(
                 {
@@ -304,7 +294,7 @@ export function createRouteHandlers(
             }
           }
           const quote = await state.manager.quotes.mint.create({ mintUrl, method: "onchain" });
-          const quoteError = onchainQuoteError(quote.expiry);
+          const quoteError = reusableQuoteError(quote.expiry);
           if (quoteError) {
             return Response.json({ error: quoteError }, { status: 503 });
           }
@@ -392,9 +382,6 @@ export function createRouteHandlers(
       POST: stateManager.requireUnlocked(async (req, state: UnlockedState) => {
         try {
           const body = (await req.json()) as { amount: number; mintUrl?: string };
-          if (!isPositiveInt(body.amount)) {
-            return Response.json({ error: "Amount must be a positive integer" }, { status: 400 });
-          }
           const mintUrl = body.mintUrl || state.mintUrl;
           const prepared = await state.manager.ops.send.prepare({ mintUrl, amount: body.amount });
           const result = await state.manager.ops.send.execute(prepared);
@@ -484,12 +471,9 @@ export function createRouteHandlers(
               { status: 202 },
             );
           }
-          if (result.state === "finalized") {
-            return Response.json({
-              output: `Sent ${body.amount} sats to ${address} (fee option ${resolvedFeeIndex})`,
-            });
-          }
-          throw new Error("Unexpected onchain melt state");
+          return Response.json({
+            output: `Sent ${body.amount} sats to ${address} (fee option ${resolvedFeeIndex})`,
+          });
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           return Response.json({ error: `Payment failed: ${message}` }, { status: 500 });
@@ -879,17 +863,6 @@ function reusableQuoteError(expiry: number | null): string | null {
   return null;
 }
 
-function onchainQuoteError(expiry: number | null): string | null {
-  const monitoringError = reusableQuoteError(expiry);
-  if (monitoringError) {
-    return monitoringError;
-  }
-  if (expiry !== null && expiry !== 0) {
-    return "Cannot safely expose an expiring onchain quote through the string-only API";
-  }
-  return null;
-}
-
 type ReusableReceiveMethod = "onchain" | "bolt12";
 
 async function listReusableReceiveRequests(
@@ -900,12 +873,10 @@ async function listReusableReceiveRequests(
 
   return quotes
     .filter((quote) => {
-      if (quote.method !== method || !isPrintableSingleLineRequest(quote.request)) {
+      if (!isPrintableSingleLineRequest(quote.request)) {
         return false;
       }
-      const quoteError =
-        method === "onchain" ? onchainQuoteError(quote.expiry) : reusableQuoteError(quote.expiry);
-      return quoteError === null;
+      return reusableQuoteError(quote.expiry) === null;
     })
     .sort((a, b) => b.createdAt - a.createdAt || a.request.localeCompare(b.request))
     .map((quote) => quote.request)

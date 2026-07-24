@@ -87,8 +87,7 @@
         "token": "string"
       },
       "responses": {
-        "200": "{ output: string }",
-        "500": "{ error: string }"
+        "200": "{ output: string } | { error: string }"
       }
     },
     {
@@ -101,7 +100,6 @@
       },
       "responses": {
         "200": "{ output: string }",
-        "400": "{ error: string }",
         "500": "{ error: string }"
       }
     },
@@ -113,7 +111,7 @@
         "amount": "number (optional)",
         "mintUrl": "string (optional)"
       },
-      "notes": "Returns a non-expiring mint deposit address (NUT-30). With amount, output is a BIP-321 address-and-amount URI; testnet SegWit uses the tb query key. The amount is a payment hint and only eligible confirmed deposits are mintable. Supplied amounts are checked against the mint range because Coco rc.2 auto-claims the available balance as one operation. Null and zero expiries are treated as non-expiring; returns 503 for a positive expiry because the string result cannot communicate its deadline.",
+      "notes": "Returns a mint deposit address (NUT-30). With amount, output is a BIP-321 address-and-amount URI; testnet SegWit uses the tb query key. The amount is a payment hint and only eligible confirmed deposits are mintable. Supplied amounts are checked against the mint range because Coco rc.2 auto-claims the available balance as one operation. Coco monitors reusable quotes through their advertised expiry; an already-expired quote returns 503.",
       "responses": {
         "200": "{ output: string }",
         "400": "{ error: string }",
@@ -125,7 +123,7 @@
       "path": "/receive/onchain/list",
       "method": "GET",
       "state": "UNLOCKED",
-      "notes": "Lists saved raw NUT-30 deposit addresses from Coco's persisted reusable mint quotes when they meet cocod's current expiry policy. Null and zero expiries are treated as non-expiring; positive expiries are omitted because the output cannot communicate their deadlines. This is a local snapshot: it does not refresh mint state or revalidate key availability. BIP-321 amount hints are not persisted and are therefore not reconstructed. Quote ids, pubkeys, proofs, operations, rejected requests, expired requests, and control-bearing request strings are not exposed.",
+      "notes": "Lists saved raw NUT-30 deposit addresses from Coco's persisted reusable mint quotes when they have not expired. Future-expiring quotes remain under Coco's monitoring. This is a local snapshot: it does not refresh mint state or revalidate key availability. BIP-321 amount hints are not persisted and are therefore not reconstructed. Quote ids, pubkeys, proofs, operations, rejected requests, expired requests, and control-bearing request strings are not exposed.",
       "responses": {
         "200": "{ output: string (newline-delimited addresses) }",
         "403": "{ error: string }",
@@ -172,7 +170,6 @@
       },
       "responses": {
         "200": "{ output: string }",
-        "400": "{ error: string }",
         "500": "{ error: string }"
       }
     },
@@ -341,7 +338,7 @@
         "confirm": "boolean (optional)"
       },
       "responses": {
-        "200": "{ output: unknown }",
+        "200": "{ output: unknown } | { error: string }",
         "400": "{ error: string }",
         "402": "{ error: string }",
         "500": "{ error: string }"

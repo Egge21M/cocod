@@ -101,7 +101,8 @@ describe("routes", () => {
 
       expect(response.status).toBe(400);
       expect(await response.json()).toEqual({
-        error: "creqB payment requests are not supported by the pinned Cashu dependency",
+        error:
+          "creqB requests are disabled because the pinned Cashu decoder drops NUT-10 spending conditions",
       });
       expect(parseCalled).toBe(false);
     }
@@ -141,7 +142,8 @@ describe("routes", () => {
 
       expect(response.status).toBe(400);
       expect(await response.json()).toEqual({
-        error: "NUT-10-locked payment requests are not supported by the pinned Coco core",
+        error:
+          "NUT-10-locked requests cannot be safely prepared by Coco 2.0.0-rc.2's payment-request API",
       });
       expect(prepareCalled).toBe(false);
     }
@@ -207,18 +209,6 @@ describe("routes", () => {
   test("/receive/onchain preserves a plain address when no amount is requested", async () => {
     const address = "bc1qexample";
     const manager = {
-      mint: {
-        checkPaymentMethodCapability: async () => ({
-          supported: true,
-          disabled: false,
-          operation: "mint",
-          nut: 4,
-          method: "onchain",
-          unit: "sat",
-          minAmount: null,
-          maxAmount: null,
-        }),
-      },
       quotes: {
         mint: {
           create: async () => ({ request: address, expiry: null }),
@@ -257,10 +247,9 @@ describe("routes", () => {
           { method: "onchain", request: "bc1qnewer", expiry: null, createdAt: 2 },
           { method: "onchain", request: "bc1qzero", expiry: 0, createdAt: 3 },
           { method: "onchain", request: "bc1qexpiring", expiry: now + 3600, createdAt: 4 },
-          { method: "bolt12", request: "lno1other", expiry: null, createdAt: 5 },
           { method: "onchain", request: "bc1qline\nforged", expiry: null, createdAt: 6 },
         ],
-        output: "bc1qzero\nbc1qnewer\nbc1qolder",
+        output: "bc1qexpiring\nbc1qzero\nbc1qnewer\nbc1qolder",
       },
       {
         path: "/receive/bolt12/list",
@@ -279,7 +268,6 @@ describe("routes", () => {
           { method: "bolt12", request: "lno1future", expiry: now + 3600, createdAt: 2 },
           { method: "bolt12", request: "lno1zero", expiry: 0, createdAt: 3 },
           { method: "bolt12", request: "lno1expired", expiry: now - 1, createdAt: 4 },
-          { method: "onchain", request: "bc1qother", expiry: null, createdAt: 5 },
           { method: "bolt12", request: "lno1escape\u001b[31m", expiry: null, createdAt: 6 },
         ],
         output: "lno1zero\nlno1future\nlno1noexpiry",
@@ -391,42 +379,6 @@ describe("routes", () => {
     }
   });
 
-  test("/receive/onchain rejects an unsupported capability before quoting", async () => {
-    let quoteCreated = false;
-    const manager = {
-      mint: {
-        checkPaymentMethodCapability: async () => ({
-          supported: false,
-          disabled: false,
-          operation: "mint",
-          nut: 4,
-          method: "onchain",
-          unit: "sat",
-          reason: "disabled by mint",
-        }),
-      },
-      quotes: {
-        mint: {
-          create: async () => {
-            quoteCreated = true;
-            return { request: "bc1qexample", expiry: null };
-          },
-        },
-      },
-    };
-    const stateManager = unlockedStateManager(manager);
-    const routes = createRouteHandlers(stateManager);
-
-    const response = await routes["/receive/onchain"]!.POST!(
-      postJson("/receive/onchain", { amount: 21 }),
-      stateManager.getState(),
-    );
-
-    expect(response.status).toBe(400);
-    expect(await response.json()).toEqual({ error: "disabled by mint" });
-    expect(quoteCreated).toBe(false);
-  });
-
   test("/receive/onchain treats an expiry-zero quote as non-expiring", async () => {
     const manager = {
       mint: {
@@ -457,7 +409,7 @@ describe("routes", () => {
     expect(await response.json()).toEqual({ output: "bc1qexample" });
   });
 
-  test("/receive/onchain does not hide a positive quote expiry from the payer", async () => {
+  test("/receive/onchain trusts Coco to monitor a future-expiring quote", async () => {
     const manager = {
       mint: {
         checkPaymentMethodCapability: async () => ({
@@ -486,9 +438,9 @@ describe("routes", () => {
       stateManager.getState(),
     );
 
-    expect(response.status).toBe(503);
+    expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
-      error: "Cannot safely expose an expiring onchain quote through the string-only API",
+      output: "bitcoin:bc1qufgy354j3kmvuch987xe4s40836x3h0lg8f5n2?amount=0.00000021",
     });
   });
 

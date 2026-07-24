@@ -102,7 +102,7 @@ cocod receive bolt11 <amount> [--mint-url <url>]
 # --amount is a BIP-321 payment hint; only eligible confirmed deposits are mintable.
 cocod receive onchain [--amount <sats>] [--mint-url <url>]
 
-# List saved raw addresses with a null or zero (non-expiring) expiry.
+# List saved raw addresses that Coco still considers pending and that have not expired.
 # BIP-321 amount hints are not persisted with the address.
 cocod receive onchain list
 
@@ -138,8 +138,9 @@ Use these commands when a server responds with HTTP `402` and an `X-Cashu` payme
 
 AGENT rule: `cocod x-cashu handle <request>` can spend funds. Prefer `cocod x-cashu parse <request>` first to preview amount/requirements, then ask permission before handling unless already instructed.
 
-Compatibility: the pinned dependencies reject `creqB` requests and NUT-10 locks before
-proofs are prepared. Do not work around that rejection.
+Compatibility: cocod disables `creqB` because the pinned Cashu decoder can discard NUT-10
+spending conditions. It also rejects decoded locks because Coco 2.0.0-rc.2's payment-request
+API does not enforce them. Do not work around those guards.
 
 ```bash
 # Parse an encoded X-Cashu request from a 402 response header

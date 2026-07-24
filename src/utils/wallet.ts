@@ -34,13 +34,14 @@ export async function initializeWallet(
   const seed = mnemonicToSeedSync(mnemonic);
 
   const repo = new SqliteRepositories({ database: new Database(DB_FILE) });
-  const cocoLogger =
-    logger?.child?.({ component: "coco" }) ?? new ConsoleLogger("Coco", { level: "info" });
+  const walletLogger = logger?.child?.({ component: "coco" }) ?? logger;
+  const cocoLogger = walletLogger ?? new ConsoleLogger("Coco", { level: "info" });
   const sk = privateKeyFromSeedWords(mnemonic);
   const signer = async (t: EventTemplate) => finalizeEvent(t, sk);
   const npcPlugin = new NPCPlugin({
     // npub.cash is a marketing redirect that does not speak the sync protocol
     defaultBaseUrl: "https://npubx.cash",
+    logger: cocoLogger,
   });
   const coco = await initializeCoco({
     repo,
@@ -53,7 +54,6 @@ export async function initializeWallet(
     id: "default",
     signer,
     useWebsocket: true,
-    autoStart: true,
   });
   await coco.mint.addMint(config.mintUrl, { trusted: true });
 

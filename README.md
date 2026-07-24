@@ -97,8 +97,9 @@ cocod x-cashu parse "<encoded-x-cashu-request>"
 cocod x-cashu handle "<encoded-x-cashu-request>"
 ```
 
-The pinned v2 dependencies safely handle only `creqA` requests without NUT-10 locks.
-`creqB` and locked requests are rejected before any proofs are prepared.
+Cocod accepts `creqA` requests without NUT-10 locks. It disables `creqB` because the pinned
+Cashu decoder can discard NUT-10 spending conditions, and it rejects decoded locks because
+Coco 2.0.0-rc.2's payment-request API does not enforce them.
 
 ## Upgrading from 0.0.16 or earlier
 
@@ -136,8 +137,9 @@ Logging defaults:
 - `receive onchain list` returns saved raw deposit addresses that meet cocod's current expiry
   policy. It reads local Coco state without refreshing it. The optional BIP-321 amount is a
   display hint and is not persisted with the address.
-- Only non-expiring onchain quotes are exposed; `expiry: null` and `expiry: 0` both mean
-  non-expiring. The amount is a payment hint and only eligible confirmed deposits are mintable.
+- Coco monitors reusable onchain quotes through their advertised expiry. Cocod rejects quotes
+  that are already expired but does not impose a stricter lifetime policy.
+- The amount is a payment hint and only eligible confirmed deposits are mintable.
 - `send onchain` accepts a raw Bitcoin address and an explicit satoshi amount. It does not
   parse BIP-321 URIs.
 
