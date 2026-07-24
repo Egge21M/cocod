@@ -22,10 +22,10 @@
     "typescript": "^5"
   },
   "dependencies": {
+    "@cashu/coco-core": "2.0.0-rc.2",
+    "@cashu/coco-sqlite-bun": "2.0.0-rc.2",
     "@scure/bip39": "^2.0.1",
-    "coco-cashu-core": "1.1.2-rc.50",
-    "coco-cashu-plugin-npc": "2.4.1",
-    "coco-cashu-sqlite-bun": "1.1.2-rc.50",
+    "coco-cashu-plugin-npc": "3.0.0-rc.20260707.3.1.sha.debd5dd",
     "commander": "^14.0.2",
     "nostr-tools": "^2.22.1"
   }

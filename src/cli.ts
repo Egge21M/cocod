@@ -1,5 +1,12 @@
 import { startDaemon } from "./daemon";
-import { program, handleDaemonCommand, callDaemonStream } from "./cli-shared";
+import {
+  program,
+  handleDaemonCommand,
+  callDaemonStream,
+  parseNonNegativeIntegerArgument,
+  parsePositiveIntegerArgument,
+  rejectParentOptionsForSubcommand,
+} from "./cli-shared";
 import {
   DEFAULT_LOG_LINES,
   followLogFile,
@@ -87,6 +94,62 @@ receiveCmd
     });
   });
 
+const receiveOnchainCmd = receiveCmd
+  .command("onchain")
+  .description("Get an onchain deposit address from the mint")
+  .option(
+    "--amount <amount>",
+    "Amount in sats (wraps the address as a bitcoin: URI)",
+    parsePositiveIntegerArgument,
+  )
+  .option("--mint-url <url>", "Mint URL to use (defaults to the mint URL configured during init)")
+  .action(async (options: { amount?: number; mintUrl?: string }) => {
+    await handleDaemonCommand("/receive/onchain", {
+      method: "POST",
+      body: {
+        amount: options.amount,
+        mintUrl: options.mintUrl,
+      },
+    });
+  });
+
+receiveOnchainCmd
+  .command("list")
+  .description("List saved onchain deposit addresses")
+  .action(async function () {
+    rejectParentOptionsForSubcommand(this);
+    await handleDaemonCommand("/receive/onchain/list");
+  });
+
+const receiveBolt12Cmd = receiveCmd
+  .command("bolt12")
+  .description("Create a BOLT12 offer to receive tokens")
+  .option(
+    "--amount <amount>",
+    "Fixed amount in sats to embed in the offer",
+    parsePositiveIntegerArgument,
+  )
+  .option("--description <text>", "Description to embed in the offer")
+  .option("--mint-url <url>", "Mint URL to use (defaults to the mint URL configured during init)")
+  .action(async (options: { amount?: number; description?: string; mintUrl?: string }) => {
+    await handleDaemonCommand("/receive/bolt12", {
+      method: "POST",
+      body: {
+        amount: options.amount,
+        description: options.description,
+        mintUrl: options.mintUrl,
+      },
+    });
+  });
+
+receiveBolt12Cmd
+  .command("list")
+  .description("List saved BOLT12 offers")
+  .action(async function () {
+    rejectParentOptionsForSubcommand(this);
+    await handleDaemonCommand("/receive/bolt12/list");
+  });
+
 // Send - nested subcommands
 const sendCmd = program.command("send").description("Send operations");
 
@@ -109,6 +172,51 @@ sendCmd
     await handleDaemonCommand("/send/bolt11", {
       method: "POST",
       body: { invoice, mintUrl: options.mintUrl },
+    });
+  });
+
+sendCmd
+  .command("onchain")
+  .description("Pay to an onchain Bitcoin address")
+  .argument("<address>", "Raw Bitcoin address")
+  .argument("<amount>", "Amount in sats", parsePositiveIntegerArgument)
+  .option(
+    "--fee-index <index>",
+    "Fee option index (defaults to the cheapest)",
+    parseNonNegativeIntegerArgument,
+  )
+  .option("--mint-url <url>", "Mint URL to use (defaults to the mint URL configured during init)")
+  .action(
+    async (address: string, amount: number, options: { feeIndex?: number; mintUrl?: string }) => {
+      await handleDaemonCommand("/send/onchain", {
+        method: "POST",
+        body: {
+          address,
+          amount,
+          feeIndex: options.feeIndex,
+          mintUrl: options.mintUrl,
+        },
+      });
+    },
+  );
+
+sendCmd
+  .command("bolt12 <offer>")
+  .description("Pay a BOLT12 offer")
+  .option(
+    "--amount <amount>",
+    "Amount in sats (required for amountless offers)",
+    parsePositiveIntegerArgument,
+  )
+  .option("--mint-url <url>", "Mint URL to use (defaults to the mint URL configured during init)")
+  .action(async (offer: string, options: { amount?: number; mintUrl?: string }) => {
+    await handleDaemonCommand("/send/bolt12", {
+      method: "POST",
+      body: {
+        offer,
+        amount: options.amount,
+        mintUrl: options.mintUrl,
+      },
     });
   });
 
@@ -182,6 +290,16 @@ mintsCmd
   .description("Add a mint URL")
   .action(async (url: string) => {
     await handleDaemonCommand("/mints/add", {
+      method: "POST",
+      body: { url },
+    });
+  });
+
+mintsCmd
+  .command("default <url>")
+  .description("Set the default mint URL (trusts the mint and persists across restarts)")
+  .action(async (url: string) => {
+    await handleDaemonCommand("/mints/default", {
       method: "POST",
       body: { url },
     });

@@ -1,11 +1,49 @@
-import { program } from "commander";
+import { InvalidArgumentError, program, type Command } from "commander";
 
-const CONFIG_DIR = `${process.env.HOME || process.env.USERPROFILE}/.cocod`;
-const SOCKET_PATH = process.env.COCOD_SOCKET || `${CONFIG_DIR}/cocod.sock`;
+import { SOCKET_PATH } from "./utils/config.js";
 
 export interface CommandResponse {
   output?: unknown;
   error?: string;
+}
+
+export function parsePositiveIntegerArgument(value: string): number {
+  if (!/^[1-9]\d*$/.test(value)) {
+    throw new InvalidArgumentError("Expected a positive integer");
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed)) {
+    throw new InvalidArgumentError("Integer exceeds JavaScript's safe range");
+  }
+  return parsed;
+}
+
+export function parseNonNegativeIntegerArgument(value: string): number {
+  if (!/^(?:0|[1-9]\d*)$/.test(value)) {
+    throw new InvalidArgumentError("Expected a non-negative integer");
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed)) {
+    throw new InvalidArgumentError("Integer exceeds JavaScript's safe range");
+  }
+  return parsed;
+}
+
+export function rejectParentOptionsForSubcommand(command: Command): void {
+  const parent = command.parent;
+  const suppliedOption = parent?.options.find(
+    (option) => parent.getOptionValueSource(option.attributeName()) === "cli",
+  );
+
+  if (suppliedOption) {
+    command.error(
+      `error: option '${suppliedOption.flags}' cannot be used with '${command.name()}'`,
+      {
+        exitCode: 1,
+        code: "commander.conflictingOption",
+      },
+    );
+  }
 }
 
 async function callDaemon(
