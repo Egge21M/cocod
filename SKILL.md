@@ -102,8 +102,15 @@ cocod receive bolt11 <amount> [--mint-url <url>]
 # --amount is a BIP-321 payment hint; only eligible confirmed deposits are mintable.
 cocod receive onchain [--amount <sats>] [--mint-url <url>]
 
+# List saved raw addresses with a null or zero (non-expiring) expiry.
+# BIP-321 amount hints are not persisted with the address.
+cocod receive onchain list
+
 # Create a BOLT12 offer (NUT-25); omit --amount for a reusable amountless offer
 cocod receive bolt12 [--amount <sats>] [--description <text>] [--mint-url <url>]
+
+# List saved BOLT12 offers that are non-expiring or have not yet expired
+cocod receive bolt12 list
 ```
 
 ### Sending Payments

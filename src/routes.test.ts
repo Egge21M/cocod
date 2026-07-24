@@ -237,6 +237,81 @@ describe("routes", () => {
     expect(await response.json()).toEqual({ output: address });
   });
 
+  test("receive quote lists return only safe requests accepted by the expiry policy", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const cases = [
+      {
+        path: "/receive/onchain/list",
+        method: "onchain",
+        quotes: [
+          {
+            method: "onchain",
+            request: "bc1qolder",
+            expiry: null,
+            createdAt: 1,
+            quoteId: "private-quote-id",
+            pubkey: "linkable-pubkey",
+            quoteData: { secret: "must-not-leak" },
+            outputData: [{ secret: "proof-secret", blindingFactor: "blinding-factor" }],
+          },
+          { method: "onchain", request: "bc1qnewer", expiry: null, createdAt: 2 },
+          { method: "onchain", request: "bc1qzero", expiry: 0, createdAt: 3 },
+          { method: "onchain", request: "bc1qexpiring", expiry: now + 3600, createdAt: 4 },
+          { method: "bolt12", request: "lno1other", expiry: null, createdAt: 5 },
+          { method: "onchain", request: "bc1qline\nforged", expiry: null, createdAt: 6 },
+        ],
+        output: "bc1qzero\nbc1qnewer\nbc1qolder",
+      },
+      {
+        path: "/receive/bolt12/list",
+        method: "bolt12",
+        quotes: [
+          {
+            method: "bolt12",
+            request: "lno1noexpiry",
+            expiry: null,
+            createdAt: 1,
+            quoteId: "private-quote-id",
+            pubkey: "linkable-pubkey",
+            quoteData: { secret: "must-not-leak" },
+            outputData: [{ secret: "proof-secret", blindingFactor: "blinding-factor" }],
+          },
+          { method: "bolt12", request: "lno1future", expiry: now + 3600, createdAt: 2 },
+          { method: "bolt12", request: "lno1zero", expiry: 0, createdAt: 3 },
+          { method: "bolt12", request: "lno1expired", expiry: now - 1, createdAt: 4 },
+          { method: "onchain", request: "bc1qother", expiry: null, createdAt: 5 },
+          { method: "bolt12", request: "lno1escape\u001b[31m", expiry: null, createdAt: 6 },
+        ],
+        output: "lno1zero\nlno1future\nlno1noexpiry",
+      },
+    ] as const;
+
+    for (const testCase of cases) {
+      let listedMethod: string | undefined;
+      const manager = {
+        quotes: {
+          mint: {
+            listPending: async (input: { method: string }) => {
+              listedMethod = input.method;
+              return testCase.quotes;
+            },
+          },
+        },
+      };
+      const stateManager = unlockedStateManager(manager);
+      const routes = createRouteHandlers(stateManager);
+
+      const response = await routes[testCase.path]!.GET!(
+        new Request(`http://localhost${testCase.path}`),
+        stateManager.getState(),
+      );
+
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ output: testCase.output });
+      expect(listedMethod).toBe(testCase.method);
+    }
+  });
+
   test("/receive/onchain rejects amounts outside the mint's NUT-30 limits before quoting", async () => {
     for (const amount of [20, 201]) {
       let quoteCreated = false;
@@ -352,7 +427,7 @@ describe("routes", () => {
     expect(quoteCreated).toBe(false);
   });
 
-  test("/receive/onchain does not expose an expiry-zero quote with Coco rc.2", async () => {
+  test("/receive/onchain treats an expiry-zero quote as non-expiring", async () => {
     const manager = {
       mint: {
         checkPaymentMethodCapability: async () => ({
@@ -374,14 +449,12 @@ describe("routes", () => {
     const routes = createRouteHandlers(stateManager);
 
     const response = await routes["/receive/onchain"]!.POST!(
-      postJson("/receive/onchain", { amount: 21 }),
+      postJson("/receive/onchain", {}),
       stateManager.getState(),
     );
 
-    expect(response.status).toBe(503);
-    expect(await response.json()).toEqual({
-      error: "This mint returned a non-expiring quote that Coco rc.2 cannot safely monitor",
-    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ output: "bc1qexample" });
   });
 
   test("/receive/onchain does not hide a positive quote expiry from the payer", async () => {
@@ -419,7 +492,7 @@ describe("routes", () => {
     });
   });
 
-  test("/receive/bolt12 does not expose an expiry-zero quote with Coco rc.2", async () => {
+  test("/receive/bolt12 treats an expiry-zero quote as non-expiring", async () => {
     const manager = {
       quotes: {
         mint: {
@@ -435,10 +508,8 @@ describe("routes", () => {
       stateManager.getState(),
     );
 
-    expect(response.status).toBe(503);
-    expect(await response.json()).toEqual({
-      error: "This mint returned a non-expiring quote that Coco rc.2 cannot safely monitor",
-    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ output: "lno1example" });
   });
 
   test("/receive/bolt12 accepts null and future expiries but rejects expired quotes", async () => {

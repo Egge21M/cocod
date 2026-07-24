@@ -323,6 +323,20 @@ export function createRouteHandlers(
         }
       }),
     },
+    "/receive/onchain/list": {
+      GET: stateManager.requireUnlocked(async (_req, state: UnlockedState) => {
+        try {
+          const output = await listReusableReceiveRequests(state, "onchain");
+          return Response.json({ output });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          return Response.json(
+            { error: `Failed to list onchain deposit addresses: ${message}` },
+            { status: 500 },
+          );
+        }
+      }),
+    },
     "/receive/bolt12": {
       POST: stateManager.requireUnlocked(async (req, state: UnlockedState) => {
         try {
@@ -357,6 +371,20 @@ export function createRouteHandlers(
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           return Response.json({ error: `Failed to create offer: ${message}` }, { status: 500 });
+        }
+      }),
+    },
+    "/receive/bolt12/list": {
+      GET: stateManager.requireUnlocked(async (_req, state: UnlockedState) => {
+        try {
+          const output = await listReusableReceiveRequests(state, "bolt12");
+          return Response.json({ output });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          return Response.json(
+            { error: `Failed to list BOLT12 offers: ${message}` },
+            { status: 500 },
+          );
         }
       }),
     },
@@ -845,10 +873,7 @@ function resolveMintUrl(value: unknown, fallback: string): string | null {
 }
 
 function reusableQuoteError(expiry: number | null): string | null {
-  if (expiry === 0) {
-    return "This mint returned a non-expiring quote that Coco rc.2 cannot safely monitor";
-  }
-  if (expiry !== null && expiry * 1000 <= Date.now()) {
+  if (expiry !== null && expiry !== 0 && expiry * 1000 <= Date.now()) {
     return "The mint returned an expired quote";
   }
   return null;
@@ -859,10 +884,36 @@ function onchainQuoteError(expiry: number | null): string | null {
   if (monitoringError) {
     return monitoringError;
   }
-  if (expiry !== null) {
+  if (expiry !== null && expiry !== 0) {
     return "Cannot safely expose an expiring onchain quote through the string-only API";
   }
   return null;
+}
+
+type ReusableReceiveMethod = "onchain" | "bolt12";
+
+async function listReusableReceiveRequests(
+  state: UnlockedState,
+  method: ReusableReceiveMethod,
+): Promise<string> {
+  const quotes = await state.manager.quotes.mint.listPending({ method });
+
+  return quotes
+    .filter((quote) => {
+      if (quote.method !== method || !isPrintableSingleLineRequest(quote.request)) {
+        return false;
+      }
+      const quoteError =
+        method === "onchain" ? onchainQuoteError(quote.expiry) : reusableQuoteError(quote.expiry);
+      return quoteError === null;
+    })
+    .sort((a, b) => b.createdAt - a.createdAt || a.request.localeCompare(b.request))
+    .map((quote) => quote.request)
+    .join("\n");
+}
+
+function isPrintableSingleLineRequest(request: unknown): request is string {
+  return typeof request === "string" && /^[\x21-\x7e]+$/.test(request);
 }
 
 export function cheapestFeeIndex(options: OnchainMeltQuote["fee_options"]): number | undefined {

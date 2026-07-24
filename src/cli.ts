@@ -5,6 +5,7 @@ import {
   callDaemonStream,
   parseNonNegativeIntegerArgument,
   parsePositiveIntegerArgument,
+  rejectParentOptionsForSubcommand,
 } from "./cli-shared";
 import {
   DEFAULT_LOG_LINES,
@@ -93,7 +94,7 @@ receiveCmd
     });
   });
 
-receiveCmd
+const receiveOnchainCmd = receiveCmd
   .command("onchain")
   .description("Get an onchain deposit address from the mint")
   .option(
@@ -112,7 +113,15 @@ receiveCmd
     });
   });
 
-receiveCmd
+receiveOnchainCmd
+  .command("list")
+  .description("List saved onchain deposit addresses")
+  .action(async function () {
+    rejectParentOptionsForSubcommand(this);
+    await handleDaemonCommand("/receive/onchain/list");
+  });
+
+const receiveBolt12Cmd = receiveCmd
   .command("bolt12")
   .description("Create a BOLT12 offer to receive tokens")
   .option(
@@ -131,6 +140,14 @@ receiveCmd
         mintUrl: options.mintUrl,
       },
     });
+  });
+
+receiveBolt12Cmd
+  .command("list")
+  .description("List saved BOLT12 offers")
+  .action(async function () {
+    rejectParentOptionsForSubcommand(this);
+    await handleDaemonCommand("/receive/bolt12/list");
   });
 
 // Send - nested subcommands

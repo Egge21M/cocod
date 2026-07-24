@@ -51,7 +51,9 @@ cocod balance
 cocod receive cashu "cashuA..."
 cocod receive bolt11 1000
 cocod receive onchain --amount 50000
+cocod receive onchain list
 cocod receive bolt12 --amount 1000
+cocod receive bolt12 list
 
 # Send
 cocod send cashu 500
@@ -131,8 +133,11 @@ Logging defaults:
 
 - `receive onchain --amount <sats>` generates a BIP-321
   address-and-amount URI. Testnet SegWit addresses use the `tb` query key.
-- Only non-expiring onchain quotes are exposed; the amount is a payment hint and only eligible
-  confirmed deposits are mintable.
+- `receive onchain list` returns saved raw deposit addresses that meet cocod's current expiry
+  policy. It reads local Coco state without refreshing it. The optional BIP-321 amount is a
+  display hint and is not persisted with the address.
+- Only non-expiring onchain quotes are exposed; `expiry: null` and `expiry: 0` both mean
+  non-expiring. The amount is a payment hint and only eligible confirmed deposits are mintable.
 - `send onchain` accepts a raw Bitcoin address and an explicit satoshi amount. It does not
   parse BIP-321 URIs.
 

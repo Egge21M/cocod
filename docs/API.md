@@ -31,14 +31,18 @@ All commands are available under `cocod`.
   - Only eligible confirmed deposits are mintable
   - The amount must stay within the mint's advertised range because Coco rc.2 auto-claims the
     available balance as one operation
+- `receive onchain list` - List saved raw addresses that meet cocod's current expiry policy
+  - BIP-321 amount hints are not included because cocod does not persist them with the quote
 - `receive bolt12` - Create a BOLT12 offer (NUT-25)
   - `--amount <sats>` embed a fixed amount in the offer (omit for a reusable amountless offer)
   - `--description <text>` description to embed in the offer
   - `--mint-url <url>` override default mint
+- `receive bolt12 list` - List saved offers that meet cocod's current expiry policy
 
-`receive onchain` exposes only quotes with `expiry: null`; its string result cannot safely
-communicate a payment deadline. With the pinned Coco rc.2 core, both receive methods also
-reject `expiry: 0`, which that version cannot safely monitor.
+`receive onchain` exposes only non-expiring quotes (`expiry: null` or `expiry: 0`); its string
+result cannot safely communicate a payment deadline. Both values are treated as non-expiring,
+matching Coco's corrected expiry semantics. The list commands use Coco's persisted reusable
+quotes without refreshing them and omit rejected or expired requests.
 
 ### Send
 
@@ -106,7 +110,9 @@ The CLI talks to the daemon over HTTP on a UNIX socket.
 - `POST /receive/cashu`
 - `POST /receive/bolt11`
 - `POST /receive/onchain`
+- `GET /receive/onchain/list`
 - `POST /receive/bolt12`
+- `GET /receive/bolt12/list`
 - `POST /send/cashu`
 - `POST /send/bolt11`
 - `POST /send/onchain`

@@ -1,4 +1,4 @@
-import { InvalidArgumentError, program } from "commander";
+import { InvalidArgumentError, program, type Command } from "commander";
 
 import { SOCKET_PATH } from "./utils/config.js";
 
@@ -27,6 +27,23 @@ export function parseNonNegativeIntegerArgument(value: string): number {
     throw new InvalidArgumentError("Integer exceeds JavaScript's safe range");
   }
   return parsed;
+}
+
+export function rejectParentOptionsForSubcommand(command: Command): void {
+  const parent = command.parent;
+  const suppliedOption = parent?.options.find(
+    (option) => parent.getOptionValueSource(option.attributeName()) === "cli",
+  );
+
+  if (suppliedOption) {
+    command.error(
+      `error: option '${suppliedOption.flags}' cannot be used with '${command.name()}'`,
+      {
+        exitCode: 1,
+        code: "commander.conflictingOption",
+      },
+    );
+  }
 }
 
 async function callDaemon(

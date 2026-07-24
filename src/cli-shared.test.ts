@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
+import { Command } from "commander";
 
-import { parseNonNegativeIntegerArgument, parsePositiveIntegerArgument } from "./cli-shared";
+import {
+  parseNonNegativeIntegerArgument,
+  parsePositiveIntegerArgument,
+  rejectParentOptionsForSubcommand,
+} from "./cli-shared";
 
 describe("CLI integer parsing", () => {
   test("accepts exact decimal integers", () => {
@@ -13,5 +18,28 @@ describe("CLI integer parsing", () => {
       expect(() => parsePositiveIntegerArgument(value)).toThrow();
     }
     expect(() => parseNonNegativeIntegerArgument("-1")).toThrow();
+  });
+});
+
+describe("CLI nested command options", () => {
+  test("rejects parent creation options before or after a list subcommand", async () => {
+    for (const args of [
+      ["--amount", "21", "list"],
+      ["list", "--amount", "21"],
+    ]) {
+      const parent = new Command("onchain").option("--amount <amount>");
+      const list = parent
+        .command("list")
+        .exitOverride()
+        .configureOutput({ writeErr: () => {} })
+        .action(function () {
+          rejectParentOptionsForSubcommand(this);
+        });
+
+      await expect(parent.parseAsync(args, { from: "user" })).rejects.toThrow(
+        "option '--amount <amount>' cannot be used with 'list'",
+      );
+      expect(list.parent).toBe(parent);
+    }
   });
 });
