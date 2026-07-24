@@ -16,7 +16,6 @@ export interface UnlockedState {
   manager: Manager;
   mintUrl: string;
   seed: Uint8Array;
-  nostrSk: Uint8Array;
   npcAccount: NPCAccountApi;
 }
 
@@ -60,10 +59,9 @@ export class DaemonStateManager {
     manager: Manager,
     mintUrl: string,
     seed: Uint8Array,
-    nostrSk: Uint8Array,
     npcAccount: NPCAccountApi,
   ): void {
-    this.state = { status: "UNLOCKED", manager, mintUrl, seed, nostrSk, npcAccount };
+    this.state = { status: "UNLOCKED", manager, mintUrl, seed, npcAccount };
   }
 
   setUninitialized(): void {

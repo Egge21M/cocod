@@ -8,9 +8,8 @@ If you like simple tools: run commands in your terminal, and let the daemon hand
 
 - Initialize and secure a Cashu wallet
 - Check balances and transaction history
-- Send and receive Cashu tokens (including token delivery to an npub via Nostr DM)
+- Send and receive Cashu tokens
 - Send and receive Lightning payments (BOLT11 and BOLT12 offers)
-- Send and receive Cashu payment requests (NUT-18) over Nostr, HTTP, or inband
 - Send to and receive on onchain Bitcoin addresses (NUT-30)
 - Handle HTTP 402 payments with `X-Cashu`
 - Manage trusted mints
@@ -51,15 +50,12 @@ cocod balance
 # Receive
 cocod receive cashu "cashuA..."
 cocod receive bolt11 1000
-cocod receive creq 1000
 cocod receive onchain --amount 50000
 cocod receive bolt12 --amount 1000
 
 # Send
 cocod send cashu 500
-cocod send cashu 500 --to "npub1..."
 cocod send bolt11 "lnbc..."
-cocod send creq "creqA..."
 cocod send onchain "bc1q..." 50000
 cocod send bolt12 "lno1..." --amount 1000
 
@@ -89,17 +85,6 @@ cocod npc username myname
 cocod npc username myname --confirm
 ```
 
-## Nostr payment requests
-
-`receive creq` prints a NUT-18 payment request whose transport is a NIP-17 gift-wrapped
-Nostr DM to the wallet's own key. Payments are claimed while the daemon runs; the
-subscription re-activates automatically on daemon restart. `send creq` pays a request over
-whichever transport it advertises (inband prints the token, HTTP posts it, Nostr delivers a
-DM with a best-effort rollback if no relay accepts it).
-
-Relays default to a small public set; override with a comma-separated `COCOD_RELAYS`
-environment variable.
-
 ## HTTP 402 / X-Cashu
 
 ```bash
@@ -109,6 +94,9 @@ cocod x-cashu parse "<encoded-x-cashu-request>"
 # Settle and get header value for retry
 cocod x-cashu handle "<encoded-x-cashu-request>"
 ```
+
+The pinned v2 dependencies safely handle only `creqA` requests without NUT-10 locks.
+`creqB` and locked requests are rejected before any proofs are prepared.
 
 ## Upgrading from 0.0.16 or earlier
 
@@ -139,9 +127,14 @@ Logging defaults:
 - Rotation keeps 5 files at 5 MiB each by default
 - Override with `COCOD_LOG_LEVEL`, `COCOD_LOG_MAX_BYTES`, and `COCOD_LOG_MAX_FILES`
 
-Nostr defaults:
+## BIP-321 scope
 
-- Relays: a small public set, override with `COCOD_RELAYS` (comma-separated `wss://` URLs)
+- `receive onchain --amount <sats>` generates a BIP-321
+  address-and-amount URI. Testnet SegWit addresses use the `tb` query key.
+- Only non-expiring onchain quotes are exposed; the amount is a payment hint and only eligible
+  confirmed deposits are mintable.
+- `send onchain` accepts a raw Bitcoin address and an explicit satoshi amount. It does not
+  parse BIP-321 URIs.
 
 ## Development
 

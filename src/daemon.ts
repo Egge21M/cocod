@@ -71,13 +71,13 @@ export async function startDaemon() {
           state: "LOCKED",
         });
       } else {
-        const { manager, nostrSk, npcAccount } = await initializeWallet(
+        const { manager, npcAccount } = await initializeWallet(
           config,
           undefined,
           logger.child({ component: "wallet" }),
         );
         const seed = mnemonicToSeedSync(config.mnemonic);
-        stateManager.setUnlocked(manager, config.mintUrl, seed, nostrSk, npcAccount);
+        stateManager.setUnlocked(manager, config.mintUrl, seed, npcAccount);
         logger.info("wallet.config_loaded", {
           encrypted: false,
           mintUrl: config.mintUrl,

@@ -7,12 +7,10 @@ import { privateKeyFromSeedWords } from "nostr-tools/nip06";
 import { finalizeEvent, type EventTemplate } from "nostr-tools";
 import { decryptMnemonic } from "./crypto.js";
 import { SALT_FILE, DB_FILE } from "./config.js";
-import { createNostrTransportPlugin } from "./nostr.js";
 import type { WalletConfig } from "./config.js";
 
 export interface InitializedWallet {
   manager: Manager;
-  nostrSk: Uint8Array;
   npcAccount: NPCAccountApi;
 }
 
@@ -48,9 +46,7 @@ export async function initializeWallet(
     repo,
     seedGetter: async () => seed,
     logger: cocoLogger,
-    // Plugins must be registered before init: transport handlers registered later miss
-    // the boot-time re-activation of pending payment request receive operations.
-    plugins: [npcPlugin, createNostrTransportPlugin({ secretKey: sk })],
+    plugins: [npcPlugin],
   });
 
   const npcAccount = await npcPlugin.addAccount({
@@ -61,5 +57,5 @@ export async function initializeWallet(
   });
   await coco.mint.addMint(config.mintUrl, { trusted: true });
 
-  return { manager: coco, nostrSk: sk, npcAccount };
+  return { manager: coco, npcAccount };
 }

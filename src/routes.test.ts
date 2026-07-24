@@ -1,28 +1,22 @@
 import { describe, expect, test } from "bun:test";
-import { toAmount, type HistoryEntry } from "@cashu/coco-core";
-import { nip19 } from "nostr-tools";
+import { toAmount, type HistoryEntry, type Manager } from "@cashu/coco-core";
 
 import {
   cheapestFeeIndex,
   createRouteHandlers,
-  formatBtcAmount,
   isPositiveInt,
-  parseOnchainTarget,
-  pickPayableMint,
   sanitizeHistoryEntry,
 } from "./routes";
-import { decodeNostrTarget } from "./utils/nostr";
 import { DaemonStateManager } from "./utils/state";
 
 function unlockedStateManager(manager?: unknown): DaemonStateManager {
   const stateManager = new DaemonStateManager();
-  const fakeManager = (manager ?? {}) as import("@cashu/coco-core").Manager;
+  const fakeManager = (manager ?? {}) as Manager;
   const fakeNpcAccount = {} as unknown as import("coco-cashu-plugin-npc").NPCAccountApi;
   stateManager.setUnlocked(
     fakeManager,
     "https://mint.example.com",
     new Uint8Array([1, 2, 3]),
-    new Uint8Array([4, 5, 6]),
     fakeNpcAccount,
   );
   return stateManager;
@@ -35,16 +29,20 @@ function postJson(path: string, body: unknown): Request {
   });
 }
 
+function postRaw(path: string, body: string): Request {
+  return new Request(`http://localhost${path}`, {
+    method: "POST",
+    body,
+  });
+}
+
 describe("routes", () => {
   test("/init validates invalid mnemonic", async () => {
     const stateManager = new DaemonStateManager();
     const routes = createRouteHandlers(stateManager);
 
     const response = await routes["/init"]!.POST!(
-      new Request("http://localhost/init", {
-        method: "POST",
-        body: JSON.stringify({ mnemonic: "invalid mnemonic" }),
-      }),
+      postJson("/init", { mnemonic: "invalid mnemonic" }),
       stateManager.getState(),
     );
 
@@ -59,10 +57,7 @@ describe("routes", () => {
     const routes = createRouteHandlers(stateManager);
 
     const response = await routes["/unlock"]!.POST!(
-      new Request("http://localhost/unlock", {
-        method: "POST",
-        body: JSON.stringify({}),
-      }),
+      postJson("/unlock", {}),
       stateManager.getState(),
     );
 
@@ -76,10 +71,7 @@ describe("routes", () => {
     const routes = createRouteHandlers(stateManager);
 
     const response = await routes["/x-cashu/parse"]!.POST!(
-      new Request("http://localhost/x-cashu/parse", {
-        method: "POST",
-        body: JSON.stringify({}),
-      }),
+      postJson("/x-cashu/parse", {}),
       stateManager.getState(),
     );
 
@@ -88,359 +80,584 @@ describe("routes", () => {
     expect(body.error).toBe("Request is required");
   });
 
-  test("/send/cashu rejects a non-positive amount", async () => {
-    const stateManager = unlockedStateManager();
+  test("/x-cashu routes reject creqB before the decoder can discard NUT-10", async () => {
+    for (const path of ["/x-cashu/parse", "/x-cashu/handle"]) {
+      let parseCalled = false;
+      const manager = {
+        paymentRequests: {
+          parse: async () => {
+            parseCalled = true;
+            throw new Error("should not parse");
+          },
+        },
+      };
+      const stateManager = unlockedStateManager(manager);
+      const routes = createRouteHandlers(stateManager);
+
+      const response = await routes[path]!.POST!(
+        postJson(path, { request: "CREQB1example" }),
+        stateManager.getState(),
+      );
+
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({
+        error: "creqB payment requests are not supported by the pinned Cashu dependency",
+      });
+      expect(parseCalled).toBe(false);
+    }
+  });
+
+  test("/x-cashu routes reject decoded NUT-10 locks before preparing proofs", async () => {
+    for (const path of ["/x-cashu/parse", "/x-cashu/handle"]) {
+      let prepareCalled = false;
+      const manager = {
+        paymentRequests: {
+          parse: async () => ({
+            paymentRequest: {
+              nut10: {
+                kind: "P2PK",
+                data: "02example",
+              },
+            },
+            amount: toAmount(21),
+            unit: "sat",
+            allowedMints: ["https://mint.example.com"],
+            payableMints: ["https://mint.example.com"],
+            transport: { type: "inband" },
+          }),
+          prepare: async () => {
+            prepareCalled = true;
+            throw new Error("should not prepare");
+          },
+        },
+      };
+      const stateManager = unlockedStateManager(manager);
+      const routes = createRouteHandlers(stateManager);
+
+      const response = await routes[path]!.POST!(
+        postJson(path, { request: "creqAexample" }),
+        stateManager.getState(),
+      );
+
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({
+        error: "NUT-10-locked payment requests are not supported by the pinned Coco core",
+      });
+      expect(prepareCalled).toBe(false);
+    }
+  });
+
+  test("new POST routes reject malformed JSON and non-object bodies", async () => {
+    const paths = [
+      "/receive/onchain",
+      "/receive/bolt12",
+      "/send/onchain",
+      "/send/bolt12",
+      "/mints/default",
+    ];
+
+    for (const path of paths) {
+      const stateManager = unlockedStateManager();
+      const routes = createRouteHandlers(stateManager);
+
+      for (const request of [postRaw(path, "{"), postJson(path, null)]) {
+        const response = await routes[path]!.POST!(request, stateManager.getState());
+        const body = (await response.json()) as { error?: string };
+        expect(response.status).toBe(400);
+        expect(body.error).toBe("Request body must be a JSON object");
+      }
+    }
+  });
+
+  test("/receive/onchain emits a BIP-321 address-and-amount URI", async () => {
+    const address = "bc1qufgy354j3kmvuch987xe4s40836x3h0lg8f5n2";
+    const manager = {
+      mint: {
+        checkPaymentMethodCapability: async () => ({
+          supported: true,
+          disabled: false,
+          operation: "mint",
+          nut: 4,
+          method: "onchain",
+          unit: "sat",
+          minAmount: toAmount(1),
+          maxAmount: toAmount(100_000_000),
+        }),
+      },
+      quotes: {
+        mint: {
+          create: async () => ({ request: address, expiry: null }),
+        },
+      },
+    };
+    const stateManager = unlockedStateManager(manager);
     const routes = createRouteHandlers(stateManager);
 
-    const response = await routes["/send/cashu"]!.POST!(
-      postJson("/send/cashu", { amount: 0 }),
+    const response = await routes["/receive/onchain"]!.POST!(
+      postJson("/receive/onchain", { amount: 21 }),
       stateManager.getState(),
     );
 
-    const body = (await response.json()) as { error?: string };
-    expect(response.status).toBe(400);
-    expect(body.error).toBe("Amount must be a positive integer");
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      output: `bitcoin:${address}?amount=0.00000021`,
+    });
   });
 
-  test("/send/cashu rejects an invalid --to target before spending", async () => {
-    const stateManager = unlockedStateManager();
+  test("/receive/onchain preserves a plain address when no amount is requested", async () => {
+    const address = "bc1qexample";
+    const manager = {
+      mint: {
+        checkPaymentMethodCapability: async () => ({
+          supported: true,
+          disabled: false,
+          operation: "mint",
+          nut: 4,
+          method: "onchain",
+          unit: "sat",
+          minAmount: null,
+          maxAmount: null,
+        }),
+      },
+      quotes: {
+        mint: {
+          create: async () => ({ request: address, expiry: null }),
+        },
+      },
+    };
+    const stateManager = unlockedStateManager(manager);
     const routes = createRouteHandlers(stateManager);
 
-    const response = await routes["/send/cashu"]!.POST!(
-      postJson("/send/cashu", { amount: 5, to: "not-a-target" }),
+    const response = await routes["/receive/onchain"]!.POST!(
+      postJson("/receive/onchain", {}),
       stateManager.getState(),
     );
 
-    const body = (await response.json()) as { error?: string };
-    expect(response.status).toBe(400);
-    expect(body.error).toBe("Invalid Nostr target (expected npub, nprofile, or hex pubkey)");
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ output: address });
   });
 
-  test("/send/creq rejects a non-positive amount option", async () => {
-    const stateManager = unlockedStateManager();
+  test("/receive/onchain rejects amounts outside the mint's NUT-30 limits before quoting", async () => {
+    for (const amount of [20, 201]) {
+      let quoteCreated = false;
+      const manager = {
+        mint: {
+          checkPaymentMethodCapability: async () => ({
+            supported: true,
+            disabled: false,
+            operation: "mint",
+            nut: 4,
+            method: "onchain",
+            unit: "sat",
+            minAmount: toAmount(21),
+            maxAmount: toAmount(200),
+          }),
+        },
+        quotes: {
+          mint: {
+            create: async () => {
+              quoteCreated = true;
+              return { request: "bc1qexample", expiry: null };
+            },
+          },
+        },
+      };
+      const stateManager = unlockedStateManager(manager);
+      const routes = createRouteHandlers(stateManager);
+
+      const response = await routes["/receive/onchain"]!.POST!(
+        postJson("/receive/onchain", { amount }),
+        stateManager.getState(),
+      );
+
+      expect(response.status).toBe(400);
+      expect(quoteCreated).toBe(false);
+    }
+  });
+
+  test("/receive/onchain accepts exact NUT-30 bounds and absent opposite limits", async () => {
+    for (const [amount, minAmount, maxAmount] of [
+      [21, toAmount(21), null],
+      [200, null, toAmount(200)],
+    ] as const) {
+      let quoteCreated = false;
+      const manager = {
+        mint: {
+          checkPaymentMethodCapability: async () => ({
+            supported: true,
+            disabled: false,
+            operation: "mint",
+            nut: 4,
+            method: "onchain",
+            unit: "sat",
+            minAmount,
+            maxAmount,
+          }),
+        },
+        quotes: {
+          mint: {
+            create: async () => {
+              quoteCreated = true;
+              return { request: "bc1qexample", expiry: null };
+            },
+          },
+        },
+      };
+      const stateManager = unlockedStateManager(manager);
+      const routes = createRouteHandlers(stateManager);
+
+      const response = await routes["/receive/onchain"]!.POST!(
+        postJson("/receive/onchain", { amount }),
+        stateManager.getState(),
+      );
+
+      expect(response.status).toBe(200);
+      expect(quoteCreated).toBe(true);
+    }
+  });
+
+  test("/receive/onchain rejects an unsupported capability before quoting", async () => {
+    let quoteCreated = false;
+    const manager = {
+      mint: {
+        checkPaymentMethodCapability: async () => ({
+          supported: false,
+          disabled: false,
+          operation: "mint",
+          nut: 4,
+          method: "onchain",
+          unit: "sat",
+          reason: "disabled by mint",
+        }),
+      },
+      quotes: {
+        mint: {
+          create: async () => {
+            quoteCreated = true;
+            return { request: "bc1qexample", expiry: null };
+          },
+        },
+      },
+    };
+    const stateManager = unlockedStateManager(manager);
     const routes = createRouteHandlers(stateManager);
 
-    const response = await routes["/send/creq"]!.POST!(
-      postJson("/send/creq", { request: "creqA...", amount: -1 }),
+    const response = await routes["/receive/onchain"]!.POST!(
+      postJson("/receive/onchain", { amount: 21 }),
       stateManager.getState(),
     );
 
-    const body = (await response.json()) as { error?: string };
     expect(response.status).toBe(400);
-    expect(body.error).toBe("Amount must be a positive integer");
+    expect(await response.json()).toEqual({ error: "disabled by mint" });
+    expect(quoteCreated).toBe(false);
   });
 
-  test("/send/bolt12 rejects a non-positive amount option", async () => {
-    const stateManager = unlockedStateManager();
+  test("/receive/onchain does not expose an expiry-zero quote with Coco rc.2", async () => {
+    const manager = {
+      mint: {
+        checkPaymentMethodCapability: async () => ({
+          supported: true,
+          disabled: false,
+          operation: "mint",
+          nut: 4,
+          method: "onchain",
+          unit: "sat",
+        }),
+      },
+      quotes: {
+        mint: {
+          create: async () => ({ request: "bc1qexample", expiry: 0 }),
+        },
+      },
+    };
+    const stateManager = unlockedStateManager(manager);
     const routes = createRouteHandlers(stateManager);
 
-    const response = await routes["/send/bolt12"]!.POST!(
-      postJson("/send/bolt12", { offer: "lno1...", amount: 0 }),
+    const response = await routes["/receive/onchain"]!.POST!(
+      postJson("/receive/onchain", { amount: 21 }),
       stateManager.getState(),
     );
 
-    const body = (await response.json()) as { error?: string };
-    expect(response.status).toBe(400);
-    expect(body.error).toBe("Amount must be a positive integer");
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({
+      error: "This mint returned a non-expiring quote that Coco rc.2 cannot safely monitor",
+    });
   });
 
-  test("/send/creq requires request field", async () => {
-    const stateManager = unlockedStateManager();
+  test("/receive/onchain does not hide a positive quote expiry from the payer", async () => {
+    const manager = {
+      mint: {
+        checkPaymentMethodCapability: async () => ({
+          supported: true,
+          disabled: false,
+          operation: "mint",
+          nut: 4,
+          method: "onchain",
+          unit: "sat",
+        }),
+      },
+      quotes: {
+        mint: {
+          create: async () => ({
+            request: "bc1qufgy354j3kmvuch987xe4s40836x3h0lg8f5n2",
+            expiry: Math.floor(Date.now() / 1000) + 3600,
+          }),
+        },
+      },
+    };
+    const stateManager = unlockedStateManager(manager);
     const routes = createRouteHandlers(stateManager);
 
-    const response = await routes["/send/creq"]!.POST!(
-      postJson("/send/creq", {}),
+    const response = await routes["/receive/onchain"]!.POST!(
+      postJson("/receive/onchain", { amount: 21 }),
       stateManager.getState(),
     );
 
-    const body = (await response.json()) as { error?: string };
-    expect(response.status).toBe(400);
-    expect(body.error).toBe("Request is required");
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({
+      error: "Cannot safely expose an expiring onchain quote through the string-only API",
+    });
   });
 
-  test("/send/onchain requires address", async () => {
-    const stateManager = unlockedStateManager();
-    const routes = createRouteHandlers(stateManager);
-
-    const response = await routes["/send/onchain"]!.POST!(
-      postJson("/send/onchain", { amount: 21 }),
-      stateManager.getState(),
-    );
-
-    const body = (await response.json()) as { error?: string };
-    expect(response.status).toBe(400);
-    expect(body.error).toBe("Address is required");
-  });
-
-  test("/send/onchain rejects invalid address", async () => {
-    const stateManager = unlockedStateManager();
-    const routes = createRouteHandlers(stateManager);
-
-    const response = await routes["/send/onchain"]!.POST!(
-      postJson("/send/onchain", { address: "not-an-address", amount: 21 }),
-      stateManager.getState(),
-    );
-
-    const body = (await response.json()) as { error?: string };
-    expect(response.status).toBe(400);
-    expect(body.error).toBe("Invalid Bitcoin address");
-  });
-
-  test("/send/onchain requires an amount when the target has none", async () => {
-    const stateManager = unlockedStateManager();
-    const routes = createRouteHandlers(stateManager);
-
-    const response = await routes["/send/onchain"]!.POST!(
-      postJson("/send/onchain", { address: "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4" }),
-      stateManager.getState(),
-    );
-
-    const body = (await response.json()) as { error?: string };
-    expect(response.status).toBe(400);
-    expect(body.error).toBe("Amount must be a positive integer");
-  });
-
-  test("/send/bolt12 requires offer field", async () => {
-    const stateManager = unlockedStateManager();
-    const routes = createRouteHandlers(stateManager);
-
-    const response = await routes["/send/bolt12"]!.POST!(
-      postJson("/send/bolt12", {}),
-      stateManager.getState(),
-    );
-
-    const body = (await response.json()) as { error?: string };
-    expect(response.status).toBe(400);
-    expect(body.error).toBe("Offer is required");
-  });
-
-  test("/mints/default requires url field", async () => {
-    const stateManager = unlockedStateManager();
-    const routes = createRouteHandlers(stateManager);
-
-    const response = await routes["/mints/default"]!.POST!(
-      postJson("/mints/default", {}),
-      stateManager.getState(),
-    );
-
-    const body = (await response.json()) as { error?: string };
-    expect(response.status).toBe(400);
-    expect(body.error).toBe("URL is required");
-  });
-
-  test("/receive/bolt11 rejects a non-integer amount", async () => {
-    const stateManager = unlockedStateManager();
-    const routes = createRouteHandlers(stateManager);
-
-    const response = await routes["/receive/bolt11"]!.POST!(
-      postJson("/receive/bolt11", { amount: null }),
-      stateManager.getState(),
-    );
-
-    const body = (await response.json()) as { error?: string };
-    expect(response.status).toBe(400);
-    expect(body.error).toBe("Amount must be a positive integer");
-  });
-
-  test("/receive/bolt12 rejects an invalid amount instead of dropping it", async () => {
-    const stateManager = unlockedStateManager();
+  test("/receive/bolt12 does not expose an expiry-zero quote with Coco rc.2", async () => {
+    const manager = {
+      quotes: {
+        mint: {
+          create: async () => ({ request: "lno1example", expiry: 0 }),
+        },
+      },
+    };
+    const stateManager = unlockedStateManager(manager);
     const routes = createRouteHandlers(stateManager);
 
     const response = await routes["/receive/bolt12"]!.POST!(
-      postJson("/receive/bolt12", { amount: null }),
+      postJson("/receive/bolt12", {}),
       stateManager.getState(),
     );
 
-    const body = (await response.json()) as { error?: string };
-    expect(response.status).toBe(400);
-    expect(body.error).toBe("Amount must be a positive integer");
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({
+      error: "This mint returned a non-expiring quote that Coco rc.2 cannot safely monitor",
+    });
   });
 
-  test("/send/creq rejects a locked request on non-nostr transports", async () => {
-    const stubManager = {
-      paymentRequests: {
-        parse: async () => ({
-          unit: "sat",
-          amount: undefined,
-          payableMints: ["https://mint.example.com"],
-          transport: { type: "http", url: "https://receiver.example.com/pay" },
-          paymentRequest: { id: "abc", nut10: { kind: "P2PK", data: "02deadbeef" } },
-        }),
+  test("/receive/bolt12 accepts null and future expiries but rejects expired quotes", async () => {
+    for (const expiry of [null, Math.floor(Date.now() / 1000) + 3600]) {
+      const manager = {
+        quotes: {
+          mint: {
+            create: async () => ({ request: "lno1example", expiry }),
+          },
+        },
+      };
+      const stateManager = unlockedStateManager(manager);
+      const routes = createRouteHandlers(stateManager);
+
+      const response = await routes["/receive/bolt12"]!.POST!(
+        postJson("/receive/bolt12", {}),
+        stateManager.getState(),
+      );
+
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ output: "lno1example" });
+    }
+
+    const manager = {
+      quotes: {
+        mint: {
+          create: async () => ({
+            request: "lno1expired",
+            expiry: Math.floor(Date.now() / 1000) - 1,
+          }),
+        },
       },
     };
-    const stateManager = unlockedStateManager(stubManager);
+    const stateManager = unlockedStateManager(manager);
     const routes = createRouteHandlers(stateManager);
-
-    const response = await routes["/send/creq"]!.POST!(
-      postJson("/send/creq", { request: "creqA...", amount: 21 }),
+    const response = await routes["/receive/bolt12"]!.POST!(
+      postJson("/receive/bolt12", {}),
       stateManager.getState(),
     );
 
-    const body = (await response.json()) as { error?: string };
-    expect(response.status).toBe(400);
-    expect(body.error).toBe("Locked payment requests are only supported over nostr transport");
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: "The mint returned an expired quote" });
   });
 
-  test("/send/creq rejects non-P2PK spending conditions", async () => {
-    const stubManager = {
-      paymentRequests: {
-        parse: async () => ({
-          unit: "sat",
-          amount: undefined,
-          payableMints: ["https://mint.example.com"],
-          transport: {
-            type: "nostr",
-            target: "npub180cvv07tjdrrgpa0j7j7tmnyl2yr6yr7l8j4s3evf6u64th6gkwsyjh6w6",
-          },
-          paymentRequest: { id: "abc", nut10: { kind: "HTLC", data: "deadbeef" } },
-        }),
-      },
-    };
-    const stateManager = unlockedStateManager(stubManager);
+  test("/send/onchain rejects bitcoin URIs because send-side BIP-321 parsing is out of scope", async () => {
+    const stateManager = unlockedStateManager();
     const routes = createRouteHandlers(stateManager);
 
-    const response = await routes["/send/creq"]!.POST!(
-      postJson("/send/creq", { request: "creqA...", amount: 21 }),
-      stateManager.getState(),
-    );
-
-    const body = (await response.json()) as { error?: string };
-    expect(response.status).toBe(400);
-    expect(body.error).toBe("Unsupported spending condition: HTLC");
-  });
-
-  test("/send/creq rejects P2PK requests with constraint tags", async () => {
-    const stubManager = {
-      paymentRequests: {
-        parse: async () => ({
-          unit: "sat",
-          amount: undefined,
-          payableMints: ["https://mint.example.com"],
-          transport: {
-            type: "nostr",
-            target: "npub180cvv07tjdrrgpa0j7j7tmnyl2yr6yr7l8j4s3evf6u64th6gkwsyjh6w6",
-          },
-          paymentRequest: {
-            id: "abc",
-            nut10: { kind: "P2PK", data: "02deadbeef", tags: [["locktime", "1700000000"]] },
-          },
-        }),
-      },
-    };
-    const stateManager = unlockedStateManager(stubManager);
-    const routes = createRouteHandlers(stateManager);
-
-    const response = await routes["/send/creq"]!.POST!(
-      postJson("/send/creq", { request: "creqA...", amount: 21 }),
-      stateManager.getState(),
-    );
-
-    const body = (await response.json()) as { error?: string };
-    expect(response.status).toBe(400);
-    expect(body.error).toBe("P2PK requests with additional constraints (tags) are not supported");
-  });
-
-  test("/send/creq rejects an explicit --mint-url the request cannot use", async () => {
-    const stubManager = {
-      paymentRequests: {
-        parse: async () => ({
-          unit: "sat",
-          amount: undefined,
-          payableMints: ["https://other.example.com"],
-          transport: {
-            type: "nostr",
-            target: "npub180cvv07tjdrrgpa0j7j7tmnyl2yr6yr7l8j4s3evf6u64th6gkwsyjh6w6",
-          },
-          paymentRequest: { id: "abc" },
-        }),
-      },
-    };
-    const stateManager = unlockedStateManager(stubManager);
-    const routes = createRouteHandlers(stateManager);
-
-    const response = await routes["/send/creq"]!.POST!(
-      postJson("/send/creq", {
-        request: "creqA...",
+    const response = await routes["/send/onchain"]!.POST!(
+      postJson("/send/onchain", {
+        address: "bitcoin:bc1qexample?amount=0.00000021",
         amount: 21,
-        mintUrl: "https://mint.example.com",
       }),
       stateManager.getState(),
     );
 
-    const body = (await response.json()) as { error?: string };
     expect(response.status).toBe(400);
-    expect(body.error).toBe(
-      "Mint https://mint.example.com does not satisfy request (request specifies different mints, or mint balance is insufficient).",
-    );
+    expect(await response.json()).toEqual({
+      error: "Pass a raw Bitcoin address; bitcoin: URI parsing is not supported",
+    });
   });
 
-  test("/send/creq requires --amount for an amountless nostr request", async () => {
-    const stubManager = {
-      paymentRequests: {
-        parse: async () => ({
-          unit: "sat",
-          amount: undefined,
-          payableMints: ["https://mint.example.com"],
-          transport: {
-            type: "nostr",
-            target: "npub180cvv07tjdrrgpa0j7j7tmnyl2yr6yr7l8j4s3evf6u64th6gkwsyjh6w6",
-          },
-          paymentRequest: { id: "abc" },
-        }),
-      },
-    };
-    const stateManager = unlockedStateManager(stubManager);
+  test("/send/onchain requires an explicit amount", async () => {
+    const stateManager = unlockedStateManager();
     const routes = createRouteHandlers(stateManager);
 
-    const response = await routes["/send/creq"]!.POST!(
-      postJson("/send/creq", { request: "creqA..." }),
+    const response = await routes["/send/onchain"]!.POST!(
+      postJson("/send/onchain", { address: "bc1qexample" }),
       stateManager.getState(),
     );
 
-    const body = (await response.json()) as { error?: string };
     expect(response.status).toBe(400);
-    expect(body.error).toBe("Request has no amount. Use --amount to specify one");
+    expect(await response.json()).toEqual({
+      error: "Amount must be a positive safe integer",
+    });
   });
 
-  test("/send/creq rejects a conflicting --amount", async () => {
-    const stubManager = {
-      paymentRequests: {
-        parse: async () => ({
-          unit: "sat",
-          amount: { toNumber: () => 100 },
-          payableMints: ["https://mint.example.com"],
-          transport: {
-            type: "nostr",
-            target: "npub180cvv07tjdrrgpa0j7j7tmnyl2yr6yr7l8j4s3evf6u64th6gkwsyjh6w6",
+  test("/send/onchain passes the raw address and amount to Coco", async () => {
+    let quoteInput: unknown;
+    const manager = {
+      quotes: {
+        melt: {
+          create: async (input: unknown) => {
+            quoteInput = input;
+            return {
+              fee_options: [{ fee_index: 0, fee_reserve: toAmount(2), estimated_blocks: 6 }],
+            };
           },
-          paymentRequest: { id: "abc" },
-        }),
+        },
+      },
+      ops: {
+        melt: {
+          prepare: async () => ({ id: "melt-1", state: "prepared" }),
+          execute: async () => ({ id: "melt-1", state: "pending" }),
+        },
       },
     };
-    const stateManager = unlockedStateManager(stubManager);
+    const stateManager = unlockedStateManager(manager);
     const routes = createRouteHandlers(stateManager);
 
-    const response = await routes["/send/creq"]!.POST!(
-      postJson("/send/creq", { request: "creqA...", amount: 50 }),
+    const response = await routes["/send/onchain"]!.POST!(
+      postJson("/send/onchain", {
+        address: "  bc1qexample  ",
+        amount: 21,
+      }),
       stateManager.getState(),
     );
 
-    const body = (await response.json()) as { error?: string };
-    expect(response.status).toBe(400);
-    expect(body.error).toBe("Amount does not match the request amount (100 sats)");
+    expect(response.status).toBe(202);
+    expect(quoteInput).toEqual({
+      mintUrl: "https://mint.example.com",
+      method: "onchain",
+      methodData: { address: "bc1qexample", amountSats: 21 },
+    });
+    expect(await response.json()).toEqual({
+      output: "Payment pending: 21 sats to bc1qexample (fee option 0, operation melt-1)",
+    });
   });
 
-  test("/history strips tokens from entries at the route boundary", async () => {
+  test("/send/onchain reports a finalized operation as sent", async () => {
+    const manager = {
+      quotes: {
+        melt: {
+          create: async () => ({
+            fee_options: [{ fee_index: 0, fee_reserve: toAmount(2), estimated_blocks: 6 }],
+          }),
+        },
+      },
+      ops: {
+        melt: {
+          prepare: async () => ({ id: "melt-1", state: "prepared" }),
+          execute: async () => ({ id: "melt-1", state: "finalized" }),
+        },
+      },
+    };
+    const stateManager = unlockedStateManager(manager);
+    const routes = createRouteHandlers(stateManager);
+
+    const response = await routes["/send/onchain"]!.POST!(
+      postJson("/send/onchain", {
+        address: "bc1qexample",
+        amount: 21,
+      }),
+      stateManager.getState(),
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      output: "Sent 21 sats to bc1qexample (fee option 0)",
+    });
+  });
+
+  test("/send/bolt12 reports a pending operation without claiming payment", async () => {
+    const manager = {
+      quotes: {
+        melt: {
+          create: async () => ({ quoteId: "quote-1" }),
+        },
+      },
+      ops: {
+        melt: {
+          prepare: async () => ({ id: "melt-1", state: "prepared" }),
+          execute: async () => ({ id: "melt-1", state: "pending" }),
+        },
+      },
+    };
+    const stateManager = unlockedStateManager(manager);
+    const routes = createRouteHandlers(stateManager);
+
+    const response = await routes["/send/bolt12"]!.POST!(
+      postJson("/send/bolt12", { offer: "lno1example", amount: 21 }),
+      stateManager.getState(),
+    );
+
+    expect(response.status).toBe(202);
+    expect(await response.json()).toEqual({
+      output: "Payment pending for offer: lno1example (operation melt-1)",
+    });
+  });
+
+  test("/send/bolt12 reports payment only after finalization", async () => {
+    const manager = {
+      quotes: {
+        melt: {
+          create: async () => ({ quoteId: "quote-1" }),
+        },
+      },
+      ops: {
+        melt: {
+          prepare: async () => ({ id: "melt-1", state: "prepared" }),
+          execute: async () => ({ id: "melt-1", state: "finalized" }),
+        },
+      },
+    };
+    const stateManager = unlockedStateManager(manager);
+    const routes = createRouteHandlers(stateManager);
+
+    const response = await routes["/send/bolt12"]!.POST!(
+      postJson("/send/bolt12", { offer: "lno1example", amount: 21 }),
+      stateManager.getState(),
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      output: "Paid offer: lno1example",
+    });
+  });
+
+  test("/history strips tokens and serializes v2 Amount values as numbers", async () => {
     const entryWithToken = {
       id: "send:1",
       type: "send",
-      amount: "21",
+      amount: toAmount(21),
       token: { mint: "https://mint.example.com", proofs: [{ secret: "s3cret" }] },
-    };
-    const stubManager = {
+    } as unknown as HistoryEntry;
+    const manager = {
       history: { getPaginatedHistory: async () => [entryWithToken] },
     };
-    const stateManager = unlockedStateManager(stubManager);
+    const stateManager = unlockedStateManager(manager);
     const routes = createRouteHandlers(stateManager);
 
     const response = await routes["/history"]!.GET!(
@@ -450,87 +667,62 @@ describe("routes", () => {
 
     const body = (await response.json()) as { output: Record<string, unknown>[] };
     expect(response.status).toBe(200);
-    expect(body.output).toHaveLength(1);
-    expect(body.output[0]).not.toHaveProperty("token");
-    expect(body.output[0]).toMatchObject({ id: "send:1", amount: "21" });
+    expect(body.output[0]).toEqual({ id: "send:1", type: "send", amount: 21 });
   });
 
-  test("/receive/creq requires a positive amount", async () => {
-    const stateManager = unlockedStateManager();
+  test("/events strips tokens and serializes v2 Amount values as numbers", async () => {
+    let listener: ((payload: { entry: HistoryEntry }) => void) | undefined;
+    let unsubscribed = false;
+    const manager = {
+      on: (_event: string, callback: (payload: { entry: HistoryEntry }) => void) => {
+        listener = callback;
+        return () => {
+          unsubscribed = true;
+        };
+      },
+    };
+    const stateManager = unlockedStateManager(manager);
     const routes = createRouteHandlers(stateManager);
-
-    const response = await routes["/receive/creq"]!.POST!(
-      postJson("/receive/creq", { amount: 0 }),
+    const abortController = new AbortController();
+    const response = await routes["/events"]!.GET!(
+      new Request("http://localhost/events", { signal: abortController.signal }),
       stateManager.getState(),
     );
+    const reader = response.body!.getReader();
+    const entryWithToken = {
+      id: "send:1",
+      type: "send",
+      amount: toAmount(21),
+      token: { mint: "https://mint.example.com", proofs: [{ secret: "s3cret" }] },
+    } as unknown as HistoryEntry;
 
-    const body = (await response.json()) as { error?: string };
-    expect(response.status).toBe(400);
-    expect(body.error).toBe("Amount must be a positive integer");
+    listener!({ entry: entryWithToken });
+    const chunk = await reader.read();
+    const eventText = new TextDecoder().decode(chunk.value);
+    const event = JSON.parse(eventText.slice("data: ".length)) as {
+      data: { entry: Record<string, unknown> };
+    };
+
+    expect(response.status).toBe(200);
+    expect(event.data.entry).toEqual({ id: "send:1", type: "send", amount: 21 });
+    expect(eventText).not.toContain("s3cret");
+
+    abortController.abort();
+    expect(unsubscribed).toBe(true);
+    reader.releaseLock();
   });
 });
 
 describe("route helpers", () => {
-  test("formatBtcAmount trims trailing zeros", () => {
-    expect(formatBtcAmount(123)).toBe("0.00000123");
-    expect(formatBtcAmount(100000000)).toBe("1");
-    expect(formatBtcAmount(150000000)).toBe("1.5");
-  });
-
-  test("pickPayableMint prefers the fallback, then the first payable mint", () => {
-    const mints = ["https://a.example.com", "https://b.example.com"];
-    expect(pickPayableMint(mints, "https://b.example.com")).toBe("https://b.example.com");
-    expect(pickPayableMint(mints, "https://c.example.com")).toBe("https://a.example.com");
-    expect(pickPayableMint([], "https://a.example.com")).toBeNull();
-  });
-
-  test("isPositiveInt accepts only positive integers", () => {
+  test("isPositiveInt accepts only positive safe integers", () => {
     expect(isPositiveInt(21)).toBe(true);
     expect(isPositiveInt(0)).toBe(false);
     expect(isPositiveInt(-1)).toBe(false);
     expect(isPositiveInt(10.5)).toBe(false);
+    expect(isPositiveInt(Number.MAX_SAFE_INTEGER + 1)).toBe(false);
     expect(isPositiveInt(NaN)).toBe(false);
     expect(isPositiveInt(null)).toBe(false);
     expect(isPositiveInt("21")).toBe(false);
-  });
-
-  test("decodeNostrTarget accepts hex, npub, and nprofile targets", () => {
-    const hex = "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d";
-    expect(decodeNostrTarget(hex)).toEqual({ pubkey: hex, relays: [] });
-    expect(decodeNostrTarget(hex.toUpperCase()).pubkey).toBe(hex);
-    // npub encoding of the hex key above
-    const npub = "npub180cvv07tjdrrgpa0j7j7tmnyl2yr6yr7l8j4s3evf6u64th6gkwsyjh6w6";
-    expect(decodeNostrTarget(npub).pubkey).toBe(hex);
-    const nprofile = nip19.nprofileEncode({ pubkey: hex, relays: ["wss://relay.example.com"] });
-    expect(decodeNostrTarget(nprofile)).toEqual({
-      pubkey: hex,
-      relays: ["wss://relay.example.com"],
-    });
-    expect(() => decodeNostrTarget("garbage")).toThrow();
-  });
-
-  test("parseOnchainTarget rejects URIs with req- parameters", () => {
-    const address = "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4";
-    expect(parseOnchainTarget(`bitcoin:${address}?req-pop=xyz&amount=0.00000021`)).toBeNull();
-    expect(parseOnchainTarget(`bitcoin:${address}?REQ-POP=xyz`)).toBeNull();
-  });
-
-  test("parseOnchainTarget handles bare addresses and bitcoin: URIs", () => {
-    const address = "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4";
-    expect(parseOnchainTarget(address)).toEqual({ address });
-    expect(parseOnchainTarget(`bitcoin:${address}?amount=0.00000021`)).toEqual({
-      address,
-      amountSats: 21,
-    });
-    expect(parseOnchainTarget(`BITCOIN:${address}?AMOUNT=0.00000021`)).toEqual({
-      address,
-      amountSats: 21,
-    });
-    // all-uppercase QR form normalizes to lowercase bech32
-    expect(parseOnchainTarget(address.toUpperCase())).toEqual({ address });
-    // BIP-173 forbids mixed-case bech32
-    expect(parseOnchainTarget("bc1QW508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4")).toBeNull();
-    expect(parseOnchainTarget("garbage")).toBeNull();
   });
 
   test("cheapestFeeIndex picks the lowest fee reserve", () => {
@@ -543,17 +735,31 @@ describe("route helpers", () => {
     expect(cheapestFeeIndex([])).toBeUndefined();
   });
 
-  test("sanitizeHistoryEntry strips the token", () => {
+  test("sanitizeHistoryEntry strips the token and converts the amount", () => {
     const entry = {
       id: "send:1",
       type: "send",
-      amount: "21",
+      source: "operation",
+      operationId: "1",
+      state: "pending",
+      mintUrl: "https://mint.example.com",
+      unit: "sat",
+      createdAt: 1,
+      updatedAt: 2,
+      amount: toAmount(21),
       token: { mint: "https://mint.example.com", proofs: [{ secret: "s3cret" }] },
     } as unknown as HistoryEntry;
     expect(sanitizeHistoryEntry(entry)).toEqual({
       id: "send:1",
       type: "send",
-      amount: "21",
-    } as unknown as HistoryEntry);
+      source: "operation",
+      operationId: "1",
+      state: "pending",
+      mintUrl: "https://mint.example.com",
+      unit: "sat",
+      createdAt: 1,
+      updatedAt: 2,
+      amount: 21,
+    });
   });
 });

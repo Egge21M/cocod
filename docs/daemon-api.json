@@ -106,22 +106,6 @@
       }
     },
     {
-      "path": "/receive/creq",
-      "method": "POST",
-      "state": "UNLOCKED",
-      "body": {
-        "amount": "number",
-        "description": "string (optional)",
-        "mintUrl": "string (optional)"
-      },
-      "notes": "Returns a NUT-18 payment request (creqA...) with a Nostr transport. Incoming payments are claimed while the daemon runs.",
-      "responses": {
-        "200": "{ output: string }",
-        "400": "{ error: string }",
-        "500": "{ error: string }"
-      }
-    },
-    {
       "path": "/receive/onchain",
       "method": "POST",
       "state": "UNLOCKED",
@@ -129,10 +113,11 @@
         "amount": "number (optional)",
         "mintUrl": "string (optional)"
       },
-      "notes": "Returns a mint deposit address (NUT-30). With amount, output is a BIP-321 bitcoin: URI; the amount is display-only and whatever arrives is minted.",
+      "notes": "Returns a non-expiring mint deposit address (NUT-30). With amount, output is a BIP-321 address-and-amount URI; testnet SegWit uses the tb query key. The amount is a payment hint and only eligible confirmed deposits are mintable. Supplied amounts are checked against the mint range because Coco rc.2 auto-claims the available balance as one operation. Returns 503 for every non-null expiry.",
       "responses": {
         "200": "{ output: string }",
         "400": "{ error: string }",
+        "503": "{ error: string }",
         "500": "{ error: string }"
       }
     },
@@ -145,10 +130,11 @@
         "description": "string (optional)",
         "mintUrl": "string (optional)"
       },
-      "notes": "Returns a BOLT12 offer (lno1...) from a NUT-25 mint quote. Amountless offers are reusable.",
+      "notes": "Returns a BOLT12 offer (lno1...) from a NUT-25 mint quote. Amountless offers are reusable. Returns 503 for expiry-zero quotes that the pinned Coco rc.2 core cannot safely monitor.",
       "responses": {
         "200": "{ output: string }",
         "400": "{ error: string }",
+        "503": "{ error: string }",
         "500": "{ error: string }"
       }
     },
@@ -158,10 +144,8 @@
       "state": "UNLOCKED",
       "body": {
         "amount": "number",
-        "mintUrl": "string (optional)",
-        "to": "string (optional)"
+        "mintUrl": "string (optional)"
       },
-      "notes": "With to (npub/nprofile/hex pubkey), the token is delivered via NIP-17 gift-wrapped DM and the output is a confirmation string; delivery failure triggers a best-effort rollback.",
       "responses": {
         "200": "{ output: string }",
         "400": "{ error: string }",
@@ -182,34 +166,19 @@
       }
     },
     {
-      "path": "/send/creq",
-      "method": "POST",
-      "state": "UNLOCKED",
-      "body": {
-        "request": "string",
-        "amount": "number (optional)",
-        "mintUrl": "string (optional)"
-      },
-      "notes": "Pays a NUT-18 payment request over its transport: inband returns the token, http is posted by the wallet, nostr is delivered as a NIP-17 DM (rolled back on delivery failure). Only sat requests are supported.",
-      "responses": {
-        "200": "{ output: string }",
-        "400": "{ error: string }",
-        "500": "{ error: string }"
-      }
-    },
-    {
       "path": "/send/onchain",
       "method": "POST",
       "state": "UNLOCKED",
       "body": {
         "address": "string",
-        "amount": "number (optional when address is a bitcoin: URI with amount)",
+        "amount": "number",
         "feeIndex": "number (optional, defaults to cheapest fee option)",
         "mintUrl": "string (optional)"
       },
-      "notes": "NUT-30 onchain melt. address accepts a bare Bitcoin address or a BIP-321 bitcoin: URI. Onchain melts settle asynchronously; the output reports the chosen fee option and pending state.",
+      "notes": "NUT-30 onchain melt. address must be a raw Bitcoin address and amount is required in sats; send-side BIP-321 parsing is outside this API's scope. A pending operation returns 202 with its operation ID; a finalized operation returns 200.",
       "responses": {
         "200": "{ output: string }",
+        "202": "{ output: string }",
         "400": "{ error: string }",
         "500": "{ error: string }"
       }
@@ -226,6 +195,7 @@
       "notes": "NUT-25 bolt12 melt. For amountless offers the mint rejects the quote unless amount is provided.",
       "responses": {
         "200": "{ output: string }",
+        "202": "{ output: string }",
         "400": "{ error: string }",
         "500": "{ error: string }"
       }
@@ -237,6 +207,7 @@
       "body": {
         "request": "string"
       },
+      "notes": "Supports creqA requests without NUT-10 locks. Rejects creqB before decoding because the pinned Cashu dependency can discard its locking condition.",
       "responses": {
         "200": "{ output: string }",
         "400": "{ error: string }",
@@ -251,6 +222,7 @@
         "request": "string",
         "mintUrl": "string (optional)"
       },
+      "notes": "Supports creqA requests without NUT-10 locks. Rejects creqB and decoded NUT-10 locks before preparing proofs.",
       "responses": {
         "200": "{ output: string }",
         "400": "{ error: string }",
@@ -312,7 +284,7 @@
         "offset": "number (optional, default 0)",
         "limit": "number (optional, default 20, max 100)"
       },
-      "notes": "coco v2 history entries: amounts JSON-serialize as strings, rolled-back state is 'rolled_back', ids derive from operation ids (legacy rows keep 'legacy:' ids). The token field is stripped from the output so proof secrets never reach stdout.",
+      "notes": "coco v2 history entries: amounts are converted to JSON numbers, rolled-back state is 'rolled_back', ids derive from operation ids (legacy rows keep 'legacy:' ids). The token field is stripped from the output so proof secrets never reach stdout.",
       "responses": {
         "200": "{ output: unknown[] }",
         "400": "{ error: string }"

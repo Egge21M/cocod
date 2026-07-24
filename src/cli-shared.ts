@@ -1,10 +1,32 @@
-import { program } from "commander";
+import { InvalidArgumentError, program } from "commander";
 
 import { SOCKET_PATH } from "./utils/config.js";
 
 export interface CommandResponse {
   output?: unknown;
   error?: string;
+}
+
+export function parsePositiveIntegerArgument(value: string): number {
+  if (!/^[1-9]\d*$/.test(value)) {
+    throw new InvalidArgumentError("Expected a positive integer");
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed)) {
+    throw new InvalidArgumentError("Integer exceeds JavaScript's safe range");
+  }
+  return parsed;
+}
+
+export function parseNonNegativeIntegerArgument(value: string): number {
+  if (!/^(?:0|[1-9]\d*)$/.test(value)) {
+    throw new InvalidArgumentError("Expected a non-negative integer");
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed)) {
+    throw new InvalidArgumentError("Integer exceeds JavaScript's safe range");
+  }
+  return parsed;
 }
 
 async function callDaemon(

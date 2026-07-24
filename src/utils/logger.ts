@@ -43,7 +43,6 @@ const REDACTED_KEYS = new Set([
   "encryptedMnemonic",
   "invoice",
   "mnemonic",
-  "nostrSk",
   "passphrase",
   "payload",
   "proofs",
